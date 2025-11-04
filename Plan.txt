@@ -1,0 +1,39 @@
+My Game Plan: Stock Drift Prediction (Final Year Project)
+Phase 1: Data Setup (Weeks 1–4)
+
+Goal: Get the data pipeline working — if this fails, the project fails.
+
+Task	What to Do	Status
+1. Scope Approval (S&P 50, press releases, 5 years).	☐
+2. Environment Setup	Create Conda/venv; install key libs: Transformers, Streamlit, SHAP, pandas-ta, textstat.	☐
+3. Data Test Run	Scrape a small sample (5 stocks, 20 reports each). Check data quality.	☐
+4. Full Data Scrape	Collect all S&P 50 data and store safely.	☐
+5. Data Cleaning	Clean text, link to stock prices, and label drift (UP/DOWN).	☐
+6. Simple Features	Add readability and technical indicators.	☐
+7. Baseline Model	Train a simple Vader + Logistic Regression model.	☐
+Phase 2: Core Modeling (Weeks 5–8)
+
+Goal: Build and test the advanced NLP model.
+
+Task	What to Do	Status
+8. Prep Data	Split into Train/Test/Val and tokenize for FinBERT.	☐
+9. Train FinBERT	Fine-tune FinBERT and save the best model.	☐
+10. Compare Models	Evaluate with AUC/F1 etc. vs. baseline.	☐
+11. Pick Winner	Choose the best model (likely FinBERT).	☐
+Phase 3: Insights & Demo (Weeks 9–10)
+
+Goal: Explain results and build an interactive demo.
+
+Task	What to Do	Status
+12. SHAP Analysis	Run SHAP to show which features matter most.	☐
+13. P&L Script	Create profit-and-loss demo with confidence filter.	☐
+14. Streamlit App	Build a simple app (stock selector, P&L chart, SHAP plot).	☐
+15. Repo Cleanup	Finalize GitHub repo and README.	☐
+Phase 4: Final Polish (Weeks 11–12)
+
+Goal: Finish strong and defend confidently.
+
+Task	What to Do	Status
+16. Write Report	Focus on CS parts: feature design, model results, SHAP.	☐
+17. Practice Defense	Do a mock run — explain code, P&L, and SHAP outputs.	☐
+18. Submit	Upload everything.	☐
