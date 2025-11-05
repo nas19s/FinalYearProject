@@ -1,4 +1,4 @@
-My Game Plan: Stock Drift Prediction (Final Year Project)
+My  Game Plan: Stock Drift Prediction (Final Year Project)
 Phase 1: Data Setup (Weeks 1–4)
 
 Goal: Get the data pipeline working — if this fails, the project fails.
