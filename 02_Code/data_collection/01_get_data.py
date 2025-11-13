@@ -3,15 +3,19 @@ import pandas as pd
 import os
 from tqdm import tqdm
 
-# --- SETTINGS ---
-DATA_DIR = "../../01_Data"
-PRICES_DIR = os.path.join(DATA_DIR, "prices")
-PERIOD = "10y"  # Fetch 10 years of historical data
 
-# Make sure the directory exists
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
+
+DATA_DIR = os.path.join(PROJECT_ROOT, "01_Data")
+PRICES_DIR = os.path.join(DATA_DIR, "prices")
+PERIOD = "10y"
+
 os.makedirs(PRICES_DIR, exist_ok=True)
 
-# S&P 50 tickers – a representative sample of large, liquid companies
+# S&P 50 tickers (representative large-cap stocks)
 SP50_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "BRK-B", "UNH", "JNJ",
     "XOM", "JPM", "PG", "V", "LLY", "HD", "MA", "CVX", "MRK", "ABBV",
@@ -20,33 +24,26 @@ SP50_TICKERS = [
     "TXN", "VZ", "NEE", "PM", "CMCSA", "UPS", "BMY", "RTX", "INTC", "HON"
 ]
 
-def download_prices(tickers):
-    """
-    Grab historical price data for a list of tickers and save each to a CSV.
-    """
-    print(f"Fetching {PERIOD} of price data for {len(tickers)} stocks...")
-    print("This includes major events like the 2020 crash and recent market swings.\n")
-
-    # Download all tickers at once for speed
+def get_price_data(tickers):
+    """Download historical price data for a list of tickers and save to CSVs."""
+    print(f"Downloading {PERIOD} of price data for {len(tickers)} stocks...")
+    print(f"Saving files to: {PRICES_DIR}\n")
+    
+    # Fetch all tickers at once for speed
     all_data = yf.download(tickers, period=PERIOD, group_by='ticker', auto_adjust=True)
     
     saved_count = 0
-
     for ticker in tqdm(tickers, desc="Saving CSVs"):
         try:
             df = all_data[ticker]
             if not df.empty:
-                csv_path = os.path.join(PRICES_DIR, f"{ticker}_prices.csv")
-                df.to_csv(csv_path)
+                file_path = os.path.join(PRICES_DIR, f"{ticker}_prices.csv")
+                df.to_csv(file_path)
                 saved_count += 1
         except KeyError:
-            print(f"Warning: Could not find data for {ticker}")
+            print(f"Warning: No data for {ticker}")
     
-    print(f"\nDone! Successfully saved {saved_count}/{len(tickers)} tickers to:")
-    print(f"  {os.path.abspath(PRICES_DIR)}\n")
+    print(f"\nFinished. Saved {saved_count}/{len(tickers)} tickers to {PRICES_DIR}")
 
 if __name__ == "__main__":
-    print("Starting download process...\n")
-    download_prices(SP50_TICKERS)
-    
- 
+    get_price_data(SP50_TICKERS)
