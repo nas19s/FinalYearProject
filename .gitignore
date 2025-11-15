@@ -1,0 +1,7 @@
+echo "01_Data/" > .gitignore
+echo ".DS_Store" >> .gitignore
+echo "__pycache__/" >> .gitignore
+echo "*.csv" >> .gitignore
+echo "venv/" >> .gitignore
+echo ".env" >> .gitignore
+echo ".ipynb_checkpoints/" >> .gitignore
