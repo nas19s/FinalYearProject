@@ -1,49 +1,61 @@
-# Stock Drift Prediction using FinBERT and Hybrid Feature Engineering
+# Predicting Short-to-Medium Term Stock Drift using FinBERT & Hybrid Ensembles
 
 ## Project Overview
 
-This final year project focuses on building and evaluating a machine learning pipeline capable of predicting short-term stock price drift (UP/DOWN classification) based on the textual content of corporate press releases, augmented by traditional financial features.
+This final year project builds a machine learning pipeline to predict medium-term stock price drift (UP/DOWN classification) by combining advanced Natural Language Processing (NLP) with traditional technical analysis.
 
-The core technical challenge lies in fine-tuning a specialised Transformer model (**FinBERT**) for financial sentiment analysis and demonstrating the performance and interpretability of this hybrid feature approach.
+The core innovation is a **Hybrid Ensemble strategy**: 
+1.  **Fine-tuning FinBERT** (a financial Large Language Model) on SEC filings to extract linguistic sentiment signals.
+2.  **Fusing these signals** with market momentum indicators (RSI, MACD, Volume) to create a robust risk-management model.
 
 ### 1. Project Scope 
 
-To ensure feasibility and focus during the academic year, the project scope is strictly defined:
-
-* **Universe:** Top 50 companies of the S&P 500 index.
-* **Data Source:** Corporate Press Releases (Primary) and historical stock price data.
-* **Time Horizon:** 10+ years of historical data.
-* **Target Variable:** Short-term directional drift (UP/DOWN classification).
+* **Universe:** Top 50 companies of the S&P 500.
+* **Data Source:** SEC Filings (8-K, 10-K, 10-Q) and historical price data.
+* **Target Variable:** Medium-term directional drift (20-Day Lookahead).
+* **Methodology:** Comparative analysis between a Baseline (Logistic Regression), a Pure NLP Model (FinBERT), and a Hybrid Ensemble (FinBERT + Technicals).
 
 ---
 
-## 2. Technical Approach and Game Plan
+## 2. Technical Approach & Progress
 
-The project is structured into four sequential phases, prioritising data feasibility and advanced model interpretability (SHAP analysis).
+The project follows a structured 4-phase development plan.
 
-| Phase                                 | Goal                                                                                   | Key Deliverables                                               | Status              |
-| :------------------------------------ | :------------------------------------------------------------------------------------- | :------------------------------------------------------------- | :------------------ |
-| **Phase 1: Data Grind & Feasibility** | Lock down data sources, clean text, establish the initial baseline model (VADER + LR). | Working Data Pipeline, Baseline Metrics.                       | 🚧 In Progress (W1) |
-| **Phase 2: Core CS Work**             | Implement, optimise, and rigorously test the advanced NLP model.                       | Fine-Tuned FinBERT Weights, Head-to-Head Evaluation Report.    | ☐ Planned           |
-| **Phase 3: Analysis & Artefacts**     | Build interpretability (SHAP) and the practical demonstration tool (P&L Simulator).    | SHAP Visualisations (Token-Level), Streamlit Demo Application. | ☐ Planned           |
-| **Phase 4: Polish & Defence**         | Finalise documentation and prepare for the academic inspection.                        | Final 10-Page Report, Code Polish, Inspection Practice.        | ☐ Planned           |
-
----
-
-## 3. Repository Structure
-
-This repository is organised to provide clear separation between code, data, documentation, and development notebooks, allowing for easy navigation during the project inspection.
-
-| Folder             | Content                                                                                                                                   |
-| :----------------- | :---------------------------------------------------------------------------------------------------------------------------------------- |
-| `01_Data/`         | Raw and processed data files (including the pilot test results). *(Note: Large, raw data files will be ignored by Git and not uploaded.)* |
-| `02_Code/`         | All production Python scripts (scraper, model training, feature engineering, Streamlit app).                                              |
-| `03_Notebooks/`    | Jupyter/Colab notebooks used for initial EDA, model experimentation, and SHAP analysis.                                                   |
-| `04_Docs/`         | Project reports, scope documentation, and registration materials.                                                                         |
-| `requirements.txt` | List of necessary Python packages to reproduce the environment.                                                                           |
+| Phase | Goal | Key Deliverables | Status |
+| :--- | :--- | :--- | :--- |
+| **Phase 1: Data & Feasibility** | Build scraper, clean text ("Nuclear" method), and establish a baseline. | • Cleaned SEC Dataset<br>• Baseline Model (65% Accuracy, biased)<br>• Multi-horizon target definition |  **Complete** |
+| **Phase 2: Core CS Work** | Fine-tune FinBERT to detect downturns and fix class imbalance. | • Class Weight Optimization<br>• Fine-Tuned FinBERT Model<br>• Head-to-Head Eval (FinBERT vs Baseline) |  **Complete** |
+| **Phase 3: Analysis & Artifacts** | Boost performance via Hybrid Ensemble and explain results (SHAP). | • **Hybrid Model** (Tripled recall on drops)<br>• SHAP "Why?" Visualization<br>• Strategic Backtest (P&L Simulation) | **In Progress** |
+| **Phase 4: Polish & Defense** | Finalize documentation and prepare for academic inspection. | • Final Report<br>• Code Refactoring<br>• Mock Defense | ☐ Planned |
 
 ---
 
-## 4. Institutional Compliance Note (GitLab)
+## 3. Key Findings (So Far)
 
-Initial development and version control are being tracked via this **GitHub** repository. This approach maximises efficiency during the early development phase. Upon receiving the official institutional GitLab repository link (expected Month X), the entire commit history will be **mirrored/imported** to ensure full compliance and preservation of the academic audit trail.
+* **The Baseline Trap:** Standard models (Logistic Regression) achieved 65% accuracy but failed to predict *any* market drops (Recall: 0.00), rendering them useless for risk management.
+* **FinBERT's Value:** The fine-tuned Transformer successfully learned to identify negative linguistic cues, improving the detection of downturns.
+* **The Hybrid Advantage:** Combining FinBERT's text probability with **Volume** and **RSI** tripled the model's ability to predict stock drops (Recall: ~0.30) compared to using text alone.
+
+---
+
+## 4. Repository Structure
+
+| Folder | Content |
+| :--- | :--- |
+| `01_Data/` | `processed_sec/` (Cleaned text), `prices/` (Market data), and `final_feature_dataset.csv`. |
+| `02_Code/` | Production scripts:<br>• `scraper/`: Data collection.<br>• `preprocessing/`: Text cleaning & BERT tokenization.<br>• `models/`: Training scripts for Baseline, FinBERT, and Hybrid Ensemble.<br>• `evaluation/`: ROC curves, Confusion Matrices, and SHAP analysis. |
+| `03_Models/` | Saved model weights (including the Champion FinBERT model). |
+| `04_Results/` | Generated artifacts: SHAP HTML plots, Confusion Matrices, and Feature Importance logs. |
+| `04_Docs/` | Project scope documentation and academic reports. |
+
+---
+
+## 5. Setup & Usage
+
+**Prerequisites:**
+* Python 3.10+
+* PyTorch (MPS enabled for Mac / CUDA for NVIDIA)
+
+**Installation:**
+```bash
+pip install -r requirements.txt
