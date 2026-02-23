@@ -1,0 +1,11 @@
+Rank,Ticker,Date,True_Label,Predicted,Confidence%,P_Down,P_Up,Return%,RSI_14,MACD,Gunning_Fog,Flesch_Reading_Ease,VADER_Compound,Error_Type
+1,HON,2025-10-23,Down,Up,81.7,0.1828,0.8172,-9.0,65.1,-0.508,24.7,,,FALSE POSITIVE (missed crash)
+2,CVX,2020-02-21,Down,Up,78.7,0.2126,0.7874,-45.5,42.8,-0.7201,47.7,,,FALSE POSITIVE (missed crash)
+3,MSFT,2025-01-29,Down,Up,74.5,0.2552,0.7448,-11.1,56.6,3.2235,32.1,,,FALSE POSITIVE (missed crash)
+4,MRK,2021-11-05,Down,Up,73.0,0.2697,0.7303,-10.0,48.3,2.2662,163.3,,,FALSE POSITIVE (missed crash)
+5,AMD,2022-08-03,Down,Up,72.3,0.2771,0.7229,-13.5,66.0,3.1965,23.1,,,FALSE POSITIVE (missed crash)
+6,AAPL,2020-01-29,Down,Up,71.1,0.2887,0.7113,-15.5,70.2,2.3023,20.3,,,FALSE POSITIVE (missed crash)
+7,NFLX,2016-10-20,Down,Up,71.1,0.289,0.711,-6.7,77.9,0.477,18.1,,,FALSE POSITIVE (missed crash)
+8,PG,2018-01-23,Down,Up,69.1,0.3095,0.6905,-9.9,43.5,0.0597,18.5,,,FALSE POSITIVE (missed crash)
+9,CRM,2022-06-01,Down,Up,67.0,0.3301,0.6699,-6.3,55.3,-4.6154,23.2,,,FALSE POSITIVE (missed crash)
+10,META,2022-10-27,Up,Down,65.0,0.6501,0.3499,13.8,23.8,-6.6252,21.2,,,FALSE NEGATIVE (missed rally)
