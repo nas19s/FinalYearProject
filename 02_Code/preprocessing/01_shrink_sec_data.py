@@ -1,68 +1,135 @@
-import os
-import glob
-from bs4 import BeautifulSoup
+"""
+01_shrink_sec_data.py  —  SEC text cleaning & chunking pipeline
+"""
+
+import os, re, json, logging
+import pandas as pd
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
-RAW_DIR = os.path.join(PROJECT_ROOT, "01_Data", "raw_sec")
-PROCESSED_DIR = os.path.join(PROJECT_ROOT, "01_Data", "processed_sec")
+DATA_DIR     = os.path.join(PROJECT_ROOT, "01_Data")
+SECTIONS_DIR = os.path.join(DATA_DIR, "sec_sections")
+METADATA_FILE = os.path.join(DATA_DIR, "sec_metadata.csv")   # FIX 1: drive from metadata
+OUTPUT_FILE  = os.path.join(DATA_DIR, "sec_cleaned.parquet")
 
-# Make sure the processed folder exists
-os.makedirs(PROCESSED_DIR, exist_ok=True)
+MODEL_NAME    = "ProsusAI/finbert"
+MAX_TOKENS    = 512
+STRIDE        = 128
+MIN_CHUNK_LEN = 64
 
-def clean_and_shrink():
-    """
-    Reads all raw SEC text files, strips HTML, saves cleaned text, 
-    and deletes the original raw files to save space.
-    """
-    print(f"Scanning {RAW_DIR} for SEC text files...")
-    files = glob.glob(os.path.join(RAW_DIR, "**", "*.txt"), recursive=True)
-    print(f"Found {len(files)} files. Starting cleaning process...")
+SECTION_WEIGHTS = {
+    "item_1a_risk_factors": 1.0,
+    "item_7_mda":           1.0,
+    "item_7a_market_risk":  0.6,
+    "item_9a_controls":     0.8,
+}
 
-    for file_path in tqdm(files, desc="Processing files"):
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger(__name__)
+
+_RE_HTML       = re.compile(r"<[^>]+>")
+_RE_HTML_ENT   = re.compile(r"&[a-zA-Z0-9#]+;")
+_RE_EXHIBIT    = re.compile(r"(exhibit|signature|pursuant to|incorporated by reference).*",
+                             re.IGNORECASE)
+_RE_NUM_LINE   = re.compile(r"^\s*[\d\s\$\%\,\.\-\(\)]+\s*$", re.MULTILINE)
+_RE_WHITESPACE = re.compile(r"\s+")
+
+
+def clean_text(raw: str) -> str:
+    text = _RE_HTML.sub(" ", raw)
+    text = _RE_HTML_ENT.sub(" ", text)
+    text = text.replace("\xa0", " ")          # FIX 2: remove non-breaking spaces
+    text = text.replace("\u200b", "")         # zero-width spaces (also common in SEC filings)
+    text = _RE_EXHIBIT.sub("", text)
+    text = _RE_NUM_LINE.sub("", text)
+    text = text.replace("$", " dollars ").replace("%", " percent ")
+    text = _RE_WHITESPACE.sub(" ", text).strip()
+    sentences = [s.strip() for s in text.split(".") if len(s.split()) >= 6]
+    return ". ".join(sentences)
+
+
+def stride_chunks(text: str, tokenizer):
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    chunks = []
+    for start in range(0, len(token_ids), MAX_TOKENS - STRIDE):
+        window = token_ids[start: start + MAX_TOKENS]
+        if len(window) < MIN_CHUNK_LEN:
+            break
+        decoded = tokenizer.decode(window, skip_special_tokens=True)
+        chunks.append(decoded)
+    return chunks if chunks else [text[:3000]]
+
+
+def main():
+    print("=" * 70)
+    print("SEC TEXT CLEANING & CHUNKING PIPELINE")
+    print("=" * 70)
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+    # FIX 1: read only files that are in trimmed metadata (1,823 filings)
+    meta = pd.read_csv(METADATA_FILE)
+    valid_files = set(meta["section_file"].tolist())
+    json_files  = [f for f in os.listdir(SECTIONS_DIR)
+                   if f.endswith(".json") and f in valid_files]
+
+    print(f"Processing {len(json_files)} filings (from metadata, pre-2016 excluded)")
+    print(f"Skipping {len([f for f in os.listdir(SECTIONS_DIR) if f.endswith('.json')]) - len(json_files)} excluded files")
+
+    rows = []
+
+    for fname in tqdm(json_files, desc="Cleaning"):
+        fpath = os.path.join(SECTIONS_DIR, fname)
         try:
-            # Read the raw file
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                raw_content = f.read()
-
-            # Extract metadata from path
-            parts = file_path.split(os.sep)
-            ticker = parts[-4]
-            report_type = parts[-3]
-            filing_id = parts[-2]
-
-            # Strip HTML using BeautifulSoup
-            soup = BeautifulSoup(raw_content, "lxml")
-            clean_text = soup.get_text(separator=" ", strip=True)
-
-            # Save cleaned text
-            new_filename = f"{ticker}_{report_type}_{filing_id}.txt"
-            save_path = os.path.join(PROCESSED_DIR, new_filename)
-            with open(save_path, "w", encoding="utf-8") as f:
-                f.write(clean_text)
-
-            # Delete the original raw file to free space
-            os.remove(file_path)
-
+            with open(fpath, encoding="utf-8") as f:
+                doc = json.load(f)
         except Exception as e:
-            print(f"Error processing {file_path}: {e}")
+            log.warning(f"Could not read {fname}: {e}")
+            continue
 
-    # Remove empty folders left behind
-    print("Cleaning up empty directories...")
-    for root, dirs, _ in os.walk(RAW_DIR, topdown=False):
-        for name in dirs:
-            try:
-                os.rmdir(os.path.join(root, name))
-            except OSError:
-                pass  # Folder not empty, skip
+        ticker      = doc.get("ticker", "")
+        form_type   = doc.get("form_type", "")
+        filing_date = doc.get("filing_date", "")
+        accession   = doc.get("accession", "")
+        sections    = doc.get("sections", {})
 
-    print(f"Processing complete. Cleaned files are in: {PROCESSED_DIR}")
+        for section_key, section_weight in SECTION_WEIGHTS.items():
+            raw_text = sections.get(section_key, "")
+            if not raw_text:
+                continue
+            clean = clean_text(raw_text)
+            if len(clean.split()) < 30:
+                continue
+
+            chunks = stride_chunks(clean, tokenizer)
+            for chunk_idx, chunk_text in enumerate(chunks):
+                rows.append({
+                    "ticker":         ticker,
+                    "form_type":      form_type,
+                    "filing_date":    filing_date,
+                    "accession":      accession,
+                    "section":        section_key,
+                    "section_weight": section_weight,
+                    "chunk_idx":      chunk_idx,
+                    "n_chunks":       len(chunks),
+                    "text":           chunk_text,
+                    "token_len":      len(tokenizer.tokenize(chunk_text)),
+                })
+
+    df = pd.DataFrame(rows)
+    df.to_parquet(OUTPUT_FILE, index=False)
+
+    print(f"\nSaved {len(df):,} chunks from {df['filing_date'].nunique():,} unique filing dates")
+    print(f"Output -> {OUTPUT_FILE}")
+    print("\nToken length stats:")
+    print(df["token_len"].describe().to_string())
+    print("\nRows per section:")
+    print(df.groupby("section")["ticker"].count().to_string())
+    print("\nSample cleaned text (first chunk of first row):")
+    print(repr(df["text"].iloc[0][:200]))
+
 
 if __name__ == "__main__":
-    confirm = input("This will delete the raw SEC files. Proceed? (yes/no): ")
-    if confirm.lower() == "yes":
-        clean_and_shrink()
-    else:
-        print("Operation cancelled.")
+    main()
