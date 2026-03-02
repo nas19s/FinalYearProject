@@ -1,234 +1,239 @@
 import os
-import time
-import datetime
 import gc
-
+import json
+import argparse
+import pandas as pd
 import torch
-import numpy as np
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
-from torch.optim import AdamW
-from transformers import BertForSequenceClassification, BertTokenizer, get_linear_schedule_with_warmup
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from transformers import BertForSequenceClassification, AutoTokenizer
+from sklearn.metrics import (classification_report, confusion_matrix,
+                              f1_score, roc_auc_score)
+from tqdm import tqdm
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT   = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
-TENSOR_PATH    = os.path.join(PROJECT_ROOT, "03_Models", "finbert_tensors.pt")
-MODEL_SAVE_DIR = os.path.join(PROJECT_ROOT, "03_Models", "finbert_champion")
+# Path setup
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '../../'))
+MODELS_DIR = os.path.join(PROJECT_ROOT, '03_Models')
+RESULTS_DIR = os.path.join(PROJECT_ROOT, '04_Results', 'metrics')
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# ── Hyperparameters ───────────────────────────────────────────────────────────
-BATCH_SIZE        = 2
-GRAD_ACCUMULATION = 4      # effective batch = 8
-EPOCHS            = 8      
-PATIENCE          = 2
-LEARNING_RATE     = 2e-5
-VAL_SPLIT         = 0.15
-RANDOM_SEED       = 42
-WEIGHT_STRATEGY   = 'squared'
+# Hyperparameters
+MODEL_NAME = 'ProsusAI/finbert'
+EPOCHS = 3
+BATCH_SIZE = 16
+GRAD_ACCUM = 1
+LR = 2e-5
+WARMUP_FRAC = 0.1
+MAX_GRAD_NORM = 1.0
+PATIENCE = 2
+MAX_TRAIN_SAMPLES = 4000
+MAX_VAL_SAMPLES = 1000
+MAX_TEST_SAMPLES = 4000
 
-os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+# Global device config
+DEVICE = torch.device('cpu')
+torch.set_num_threads(8)
 
+def free_memory():
+    gc.collect()
 
-def format_time(elapsed: float) -> str:
-    return str(datetime.timedelta(seconds=int(round(elapsed))))
+def load_tensors(split, horizon, max_samples=None):
+    path = os.path.join(MODELS_DIR, f'finbert_tensors_{split}_{horizon}.pt')
+    data = torch.load(path, map_location="cpu")
+    total = data["labels"].shape[0]
 
+    if max_samples and max_samples < total:
+        labels = data["labels"]
+        down_idx = (labels == 0).nonzero(as_tuple=True)[0]
+        up_idx = (labels == 1).nonzero(as_tuple=True)[0]
 
-def get_device() -> torch.device:
-    if torch.backends.mps.is_available():
-        print("Using Apple Metal (MPS) acceleration.")
-        return torch.device("mps")
-    print("Using CPU.")
-    return torch.device("cpu")
+        n_each = max_samples // 2
+        down_sampled = down_idx[torch.randperm(len(down_idx))[:n_each]]
+        up_sampled = up_idx[torch.randperm(len(up_idx))[:n_each]]
+        idx = torch.cat([down_sampled, up_sampled])
+        idx = idx[torch.randperm(len(idx))]
 
+        data = {
+            k: v[idx] if isinstance(v, torch.Tensor) else
+               [v[i] for i in idx.tolist()] if isinstance(v, list) else v
+            for k, v in data.items()
+        }
+        print(f"Sampled {max_samples} from {total} (Stratified: {n_each} per class)")
 
-def load_tensors():
-    if not os.path.exists(TENSOR_PATH):
-        raise FileNotFoundError(f"Tensor file not found: {TENSOR_PATH}")
-
-    print(f"Loading tensors from: {TENSOR_PATH}")
-    data = torch.load(TENSOR_PATH, map_location="cpu")
-
-    input_ids      = data["input_ids"]
-    attention_mask = data["attention_mask"]
-    labels         = data["labels"]
-
-    n = len(labels)
-    print(f"Total samples: {n}")
-    unique, counts = torch.unique(labels, return_counts=True)
-    for u, c in zip(unique.tolist(), counts.tolist()):
-        print(f"  Label {u}: {c} samples ({c/n*100:.1f}%)")
-
-    indices = list(range(n))
-    train_idx, val_idx = train_test_split(
-        indices,
-        test_size=VAL_SPLIT,
-        random_state=RANDOM_SEED,
-        stratify=labels.numpy(),
+    dataset = TensorDataset(
+        data["input_ids"],
+        data["attention_mask"],
+        data["labels"],
     )
+    return dataset, data["labels"]
 
-    def make_dataset(idx_list):
-        idx = torch.tensor(idx_list)
-        return TensorDataset(input_ids[idx], attention_mask[idx], labels[idx])
+def compute_class_weights(labels_tensor):
+    counts = torch.bincount(labels_tensor)
+    weights = 1.0 / counts.float()
+    weights = weights / weights.sum() * len(counts)
+    return weights
 
-    train_ds = make_dataset(train_idx)
-    val_ds   = make_dataset(val_idx)
-    print(f"Train: {len(train_idx)} | Val: {len(val_idx)}")
-    return train_ds, val_ds, labels
-
-
-def compute_class_weights(labels: torch.Tensor, device: torch.device) -> torch.Tensor:
-    unique, counts = torch.unique(labels, return_counts=True)
-    n_total   = float(len(labels))
-    n_classes = len(unique)
-
-    raw_weights = n_total / (n_classes * counts.float())
-
-    if WEIGHT_STRATEGY == 'sqrt':
-        raw_weights = torch.sqrt(raw_weights)
-    elif WEIGHT_STRATEGY == 'squared':
-        raw_weights = raw_weights ** 2
-
-    raw_weights = raw_weights / raw_weights.mean()
-
-    ordered = torch.zeros(n_classes)
-    for cls, w in zip(unique.tolist(), raw_weights.tolist()):
-        ordered[cls] = w
-
-    print(f"Class weights ({WEIGHT_STRATEGY}): Down={ordered[0]:.3f}  Up={ordered[1]:.3f}")
-    return ordered.to(device)
-
-
-def evaluate(model, dataloader, device):
+def evaluate(model, loader, criterion, device):
     model.eval()
-    all_preds, all_labels = [], []
+    total_loss = 0
+    all_preds, all_labels, all_probs = [], [], []
 
-    for batch in dataloader:
-        ids, mask, lbls = [b.to(device) for b in batch]
-        with torch.no_grad():
-            out = model(ids, token_type_ids=None, attention_mask=mask)
-        preds = torch.argmax(out.logits, dim=1).cpu().numpy()
-        all_preds.extend(preds)
-        all_labels.extend(lbls.cpu().numpy())
+    with torch.no_grad():
+        for input_ids, attention_mask, labels in loader:
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            labels = labels.to(device)
 
-    acc      = accuracy_score(all_labels, all_preds)
-    f1_wtd   = f1_score(all_labels, all_preds, average="weighted")
-    f1_macro = f1_score(all_labels, all_preds, average="macro")
-    return acc, f1_wtd, f1_macro, all_labels, all_preds
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = criterion(outputs.logits, labels)
+            total_loss += loss.item()
 
+            probs = torch.softmax(outputs.logits, dim=1)[:, 1]
+            preds = torch.argmax(outputs.logits, dim=1)
 
-def train():
-    torch.manual_seed(RANDOM_SEED)
-    np.random.seed(RANDOM_SEED)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
 
-    device = get_device()
-    train_ds, val_ds, all_labels = load_tensors()
+            del input_ids, attention_mask, labels, outputs
+            free_memory()
 
-    train_loader = DataLoader(
-        train_ds, sampler=RandomSampler(train_ds), batch_size=BATCH_SIZE
+    avg_loss = total_loss / len(loader)
+    f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
+    try:
+        auc = roc_auc_score(all_labels, all_probs)
+    except:
+        auc = float("nan")
+
+    return avg_loss, f1, auc, all_preds, all_labels, all_probs
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--horizon", type=str, default="T5", choices=["T5", "T10", "T20"])
+    args = parser.parse_args()
+    horizon = args.horizon
+
+    champion_dir = os.path.join(MODELS_DIR, f"finbert_champion_{horizon}")
+    os.makedirs(champion_dir, exist_ok=True)
+
+    print(f'Starting training for horizon: {horizon}')
+    
+    # Load data
+    train_dataset, train_labels = load_tensors("train", horizon, max_samples=MAX_TRAIN_SAMPLES)
+    val_dataset, _ = load_tensors("val", horizon, max_samples=MAX_VAL_SAMPLES)
+    test_dataset, _ = load_tensors("test", horizon, max_samples=MAX_TEST_SAMPLES)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    # Init model
+    model = BertForSequenceClassification.from_pretrained(
+        MODEL_NAME, 
+        num_labels=2, 
+        ignore_mismatched_sizes=True
     )
-    val_loader = DataLoader(
-        val_ds, sampler=SequentialSampler(val_ds), batch_size=BATCH_SIZE
+    model.to(DEVICE)
+
+    # Layer freezing: keep only top layers and heads trainable
+    for param in model.parameters():
+        param.requires_grad = False
+
+    for name, param in model.named_parameters():
+        if any(layer in name for layer in ['classifier', 'pooler', 'encoder.layer.11', 'encoder.layer.10']):
+            param.requires_grad = True
+
+    class_weights = compute_class_weights(train_labels).to(DEVICE)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=LR,
+        weight_decay=0.01
     )
 
-    # ── Resume from checkpoint if available, else start fresh ─────────────────
-    checkpoint = os.path.join(MODEL_SAVE_DIR, "config.json")
-    if os.path.exists(checkpoint):
-        print(f"\nResuming from saved checkpoint: {MODEL_SAVE_DIR}")
-        print("(Epochs 1-6 already complete — running epochs 7-8 only)")
-        model = BertForSequenceClassification.from_pretrained(MODEL_SAVE_DIR)
-    else:
-        print("\nNo checkpoint found — starting from ProsusAI/finbert base.")
-        model = BertForSequenceClassification.from_pretrained(
-            "ProsusAI/finbert",
-            num_labels=2,
-            ignore_mismatched_sizes=True,
-        )
-    model.to(device)
+    total_steps = (len(train_loader) // GRAD_ACCUM) * EPOCHS
+    warmup_steps = int(total_steps * WARMUP_FRAC)
 
-    optimizer    = AdamW(model.parameters(), lr=LEARNING_RATE, eps=1e-8)
-    total_steps  = (len(train_loader) // GRAD_ACCUMULATION) * EPOCHS
-    warmup_steps = total_steps // 10
-    scheduler    = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=warmup_steps,
-        num_training_steps=total_steps,
-    )
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / max(warmup_steps, 1)
+        return max(0.0, (total_steps - step) / max(total_steps - warmup_steps, 1))
 
-    class_weights = compute_class_weights(all_labels, device)
-    loss_fct      = torch.nn.CrossEntropyLoss(weight=class_weights)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    # Start best_val_f1_macro from last run's result so we only save improvements
-    best_val_f1_macro = 0.5968
-    epochs_no_improve = 0
-    start_time        = time.time()
+    best_val_f1 = 0
+    best_epoch = 0
+    no_improve = 0
+    training_log = []
 
-    print(f"\nStarting training — up to {EPOCHS} epochs, effective batch {BATCH_SIZE * GRAD_ACCUMULATION}")
-    print(f"Previous best macro F1: {best_val_f1_macro} (from epoch 6)")
-    print(f"Early stopping patience: {PATIENCE}")
-    print("=" * 60)
-
-    for epoch in range(EPOCHS):
-        print(f"\nEpoch {epoch + 1} / {EPOCHS}")
+    for epoch in range(1, EPOCHS + 1):
         model.train()
-        total_loss = 0.0
+        total_train_loss = 0
         optimizer.zero_grad()
 
-        for step, batch in enumerate(train_loader):
-            ids, mask, lbls = [b.to(device) for b in batch]
+        for step, (input_ids, attention_mask, labels) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}")):
+            input_ids = input_ids.to(DEVICE)
+            attention_mask = attention_mask.to(DEVICE)
+            labels = labels.to(DEVICE)
 
-            out  = model(ids, token_type_ids=None, attention_mask=mask)
-            loss = loss_fct(out.logits, lbls) / GRAD_ACCUMULATION
-
-            total_loss += loss.item()
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            loss = criterion(outputs.logits, labels) / GRAD_ACCUM
             loss.backward()
 
-            if (step + 1) % GRAD_ACCUMULATION == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            total_train_loss += loss.item() * GRAD_ACCUM
+
+            if (step + 1) % GRAD_ACCUM == 0:
+                nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
-            if step % 50 == 0:
-                gc.collect()
-                if torch.backends.mps.is_available():
-                    torch.mps.empty_cache()
+            del input_ids, attention_mask, labels, outputs
+            free_memory()
 
-        avg_loss = total_loss / len(train_loader) * GRAD_ACCUMULATION
-        elapsed  = format_time(time.time() - start_time)
-        print(f"  Avg train loss : {avg_loss:.4f}  |  Time: {elapsed}")
+        avg_train = total_train_loss / len(train_loader)
+        val_loss, val_f1, val_auc, _, _, _ = evaluate(model, val_loader, criterion, DEVICE)
 
-        val_acc, val_f1_wtd, val_f1_macro, true_labels, pred_labels = evaluate(
-            model, val_loader, device
-        )
-        print(f"  Val accuracy   : {val_acc:.4f}")
-        print(f"  Val F1 weighted: {val_f1_wtd:.4f}")
-        print(f"  Val F1 macro   : {val_f1_macro:.4f}  <- tracked for early stopping")
-        print(classification_report(
-            true_labels, pred_labels,
-            target_names=["Down", "Up"],
-            digits=3,
-        ))
+        print(f"Epoch {epoch} | Train: {avg_train:.4f} | Val Loss: {val_loss:.4f} | F1: {val_f1:.4f}")
 
-        if val_f1_macro > best_val_f1_macro:
-            best_val_f1_macro = val_f1_macro
-            epochs_no_improve = 0
-            model.save_pretrained(MODEL_SAVE_DIR)
-            tokenizer = BertTokenizer.from_pretrained("ProsusAI/finbert")
-            tokenizer.save_pretrained(MODEL_SAVE_DIR)
-            print(f"  ✓ New best model saved (macro F1 = {best_val_f1_macro:.4f})")
+        training_log.append({
+            "horizon": horizon, "epoch": epoch, "train_loss": avg_train,
+            "val_loss": val_loss, "val_f1": val_f1, "val_auc": val_auc
+        })
+
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            best_epoch = epoch
+            no_improve = 0
+            model.save_pretrained(champion_dir)
+            AutoTokenizer.from_pretrained(MODEL_NAME).save_pretrained(champion_dir)
         else:
-            epochs_no_improve += 1
-            print(f"  No improvement ({epochs_no_improve}/{PATIENCE})")
-            if epochs_no_improve >= PATIENCE:
-                print(f"\nEarly stopping triggered at epoch {epoch + 1}.")
+            no_improve += 1
+            if no_improve >= PATIENCE:
+                print("Early stopping triggered.")
                 break
 
-    print("\n" + "=" * 60)
-    print(f"Training complete.  Total time: {format_time(time.time() - start_time)}")
-    print(f"Best Val Macro F1 : {best_val_f1_macro:.4f}")
-    print(f"Model saved to    : {MODEL_SAVE_DIR}")
+    # Final Eval
+    best_model = BertForSequenceClassification.from_pretrained(champion_dir, num_labels=2)
+    best_model.to(DEVICE)
+    _, test_f1, test_auc, test_preds, test_labels, test_probs = evaluate(best_model, test_loader, criterion, DEVICE)
 
+    # Save results
+    pd.DataFrame(training_log).to_csv(os.path.join(RESULTS_DIR, f'finbert_training_log_{horizon}.csv'), index=False)
+    pd.DataFrame({
+        'true_label': test_labels,
+        'pred_label': test_preds,
+        'prob_up': test_probs
+    }).to_csv(os.path.join(RESULTS_DIR, f'finbert_test_predictions_{horizon}.csv'), index=False)
 
-if __name__ == "__main__":
-    train()
+    with open(os.path.join(champion_dir, 'training_config.json'), 'w') as f:
+        json.dump({
+            'horizon': horizon, 'best_epoch': best_epoch, 'test_f1': test_f1, 'test_auc': test_auc
+        }, f, indent=2)
+
+    print(f'Training complete. Best F1: {test_f1:.4f}')
+
+if __name__ == '__main__':
+    main()
