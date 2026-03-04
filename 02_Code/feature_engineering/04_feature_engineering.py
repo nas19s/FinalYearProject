@@ -1,125 +1,140 @@
-import pandas as pd
+"""
+04_feature_engineering.py
+
+"""
+
 import os
-import textstat
 import re
+import pandas as pd
+import numpy as np
+import textstat
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from tqdm import tqdm
 
-# --- CONFIGURATION ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# ──────────────────────────────────────────────────────────────────────────────
+SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
-DATA_DIR = os.path.join(PROJECT_ROOT, "01_Data")
-TEXT_DIR = os.path.join(DATA_DIR, "processed_sec")
-PRICES_DIR = os.path.join(DATA_DIR, "prices")
-INPUT_FILE = os.path.join(DATA_DIR, "labeled_dataset.csv")
-OUTPUT_FILE = os.path.join(DATA_DIR, "final_feature_dataset.csv")
+DATA_DIR     = os.path.join(PROJECT_ROOT, "01_Data")
+PRICES_DIR   = os.path.join(DATA_DIR, "prices")
+INPUT_FILE   = os.path.join(DATA_DIR, "labeled_dataset.parquet")
+OUTPUT_FILE  = os.path.join(DATA_DIR, "final_feature_dataset.parquet")
 
-
-BUFFER_SIZE = 150000 
-ANALYSIS_LIMIT = 100000 # NLP is performed on 100k chars
-
+ANALYSIS_LIMIT = 100_000
 analyzer = SentimentIntensityAnalyzer()
 
-def get_fast_nlp(filename):
-    """
-    Super-fast NLP extraction. Reads a buffer, cleans it, and scores it.
-    """
-    file_path = os.path.join(TEXT_DIR, filename)
-    if not os.path.exists(file_path):
-        return [0] * 5
+# ──────────────────────────────────────────────────────────────────────────────
+_RE_HTML       = re.compile(r"<[^>]+>")
+_RE_WHITESPACE = re.compile(r"\s+")
 
+
+def compute_nlp_features(text: str) -> dict:
+    """Compute readability and sentiment features from a text chunk."""
+    if not text or len(text.strip()) < 100:
+        return {"Gunning_Fog": 0, "Flesch_Ease": 0,
+                "Sentiment": 0, "Diff_Word_Ratio": 0, "Word_Count": 0}
     try:
-        with open(file_path, "r", encoding="utf-8", errors='ignore') as f:
-            raw_chunk = f.read(BUFFER_SIZE)
-
-        # 1. Quick Clean: Remove SEC Header & Tags
-        # Find start of real text 
-        start_match = re.search(r'<(DOCUMENT|TEXT|HTML)>', raw_chunk, re.IGNORECASE)
-        prose = raw_chunk[start_match.start():] if start_match else raw_chunk
-        
-        # Strip HTML tags and collapse whitespace
-        prose = re.sub(r'<[^>]+>', ' ', prose)
-        prose = " ".join(prose.split())
-        
-        # Crop to the analysis limit
+        prose = _RE_HTML.sub(" ", text)
+        prose = prose.replace("\xa0", " ")
+        prose = _RE_WHITESPACE.sub(" ", prose).strip()
         prose = prose[:ANALYSIS_LIMIT]
 
-        if len(prose) < 500:
-            return [0] * 5
+        fog     = textstat.gunning_fog(prose)
+        flesch  = textstat.flesch_reading_ease(prose)
+        vs      = analyzer.polarity_scores(prose)
+        words   = prose.split()
+        diff_r  = textstat.difficult_words(prose) / (len(words) + 1)
 
-        # 2. Metrics
-        fog = textstat.gunning_fog(prose)
-        flesch = textstat.flesch_reading_ease(prose)
-        
-        # 3. Sentiment
-        vs = analyzer.polarity_scores(prose)
-        sentiment = vs['compound']
-        
-        # 4. Complexity
-        diff_words = textstat.difficult_words(prose) / (len(prose.split()) + 1)
-        word_count = len(prose.split())
-
-        return [fog, flesch, sentiment, diff_words, word_count]
-
+        return {
+            "Gunning_Fog":    fog,
+            "Flesch_Ease":    flesch,
+            "Sentiment":      vs["compound"],
+            "Diff_Word_Ratio": diff_r,
+            "Word_Count":     len(words),
+        }
     except Exception:
-        return [0] * 5
+        return {"Gunning_Fog": 0, "Flesch_Ease": 0,
+                "Sentiment": 0, "Diff_Word_Ratio": 0, "Word_Count": 0}
 
-def get_technical_indicators(ticker):
-    price_path = os.path.join(PRICES_DIR, f"{ticker}_prices.csv")
-    if not os.path.exists(price_path): return None
-    try:
-        df = pd.read_csv(price_path)
-        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-        df = df.sort_values('Date')
-        
-        # Tech Indicators
-        df['RSI'] = RSIIndicator(close=df['Close']).rsi()
-        df['MACD'] = MACD(close=df['Close']).macd()
-        df['Volume_Change'] = df['Volume'].pct_change()
-        
-        return df[['Date', 'RSI', 'MACD', 'Volume_Change']]
-    except Exception:
-        return None
+
+def get_technical_indicators(ticker: str) -> pd.DataFrame | None:
+    """Load price data and compute RSI, MACD, Volume Change."""
+    for suffix in ("_prices.csv", ".csv"):
+        path = os.path.join(PRICES_DIR, f"{ticker}{suffix}")
+        if os.path.exists(path):
+            try:
+                df = pd.read_csv(path, parse_dates=["Date"])
+                df = df.sort_values("Date").drop_duplicates("Date")
+                df["RSI"]           = RSIIndicator(close=df["Close"]).rsi()
+                df["MACD"]          = MACD(close=df["Close"]).macd()
+                df["Volume_Change"] = df["Volume"].pct_change()
+                return df[["Date", "RSI", "MACD", "Volume_Change"]]
+            except Exception as e:
+                print(f"  [{ticker}] Technical indicator error: {e}")
+                return None
+    return None
+
 
 def main():
-    print("🚀 Starting High-Speed Feature Engineering...")
-    if not os.path.exists(INPUT_FILE):
-        print("Input file not found!")
-        return
-        
-    df = pd.read_csv(INPUT_FILE)
-    
-    # 1. Faster NLP Loop
-    tqdm.pandas(desc="Cleaning & NLP")
-    nlp_results = df['filename'].progress_apply(get_fast_nlp)
-    
-    # Expand results into columns
-    nlp_cols = ['Gunning_Fog', 'Flesch_Ease', 'Sentiment', 'Diff_Word_Ratio', 'Word_Count']
-    df[nlp_cols] = pd.DataFrame(nlp_results.tolist(), index=df.index)
-    
-    # 2. Faster Market Loop
-    unique_tickers = df['ticker'].unique()
-    indicator_frames = []
-    for ticker in tqdm(unique_tickers, desc="Technical Indicators"):
-        tech_df = get_technical_indicators(ticker)
-        if tech_df is not None:
-            tech_df['ticker'] = ticker
-            indicator_frames.append(tech_df)
-            
-    all_indicators = pd.concat(indicator_frames)
-    
-    # 3. Merge
-    df['join_date'] = pd.to_datetime(df['join_date']).dt.strftime('%Y-%m-%d')
-    final_df = pd.merge(df, all_indicators, left_on=['ticker', 'join_date'], right_on=['ticker', 'Date'], how='left')
-    
-    # 4. Final Cleanup
-    final_df = final_df.dropna(subset=['RSI', 'Gunning_Fog'])
-    final_df = final_df[final_df['Gunning_Fog'] != 0]
+    print("=" * 70)
+    print("04_feature_engineering.py")
+    print("=" * 70)
 
-    final_df.to_csv(OUTPUT_FILE, index=False)
-    print(f"Complete! Saved {len(final_df)} rows to {OUTPUT_FILE}")
+    df = pd.read_parquet(INPUT_FILE)
+    print(f"Loaded {len(df):,} rows from labeled_dataset.parquet")
+
+    # ── 1. NLP features — computed per chunk ──────────────────────────────
+    # Use the already-cleaned text column from sec_cleaned.parquet
+    print("\nComputing NLP features (Fog, Sentiment etc.)...")
+    nlp_rows = []
+    for text in tqdm(df["text"], desc="NLP features"):
+        nlp_rows.append(compute_nlp_features(str(text)))
+
+    nlp_df = pd.DataFrame(nlp_rows, index=df.index)
+    df = pd.concat([df, nlp_df], axis=1)
+
+    # ── 2. Technical indicators — computed per ticker, merged on entry_date ─
+    print("\nComputing technical indicators...")
+    indicator_frames = []
+    for ticker in tqdm(df["ticker"].unique(), desc="Technical indicators"):
+        tech = get_technical_indicators(ticker)
+        if tech is not None:
+            tech["ticker"] = ticker
+            indicator_frames.append(tech)
+
+    if indicator_frames:
+        all_tech = pd.concat(indicator_frames, ignore_index=True)
+        all_tech["Date"] = pd.to_datetime(all_tech["Date"])
+
+        # Merge on entry_date (the actual trading day we enter the position)
+        df["entry_date"] = pd.to_datetime(df["entry_date"])
+        df = df.merge(
+            all_tech,
+            left_on=["ticker", "entry_date"],
+            right_on=["ticker", "Date"],
+            how="left",
+        ).drop(columns=["Date"])
+
+    # ── 3. Drop rows with missing technical indicators ─────────────────────
+    before = len(df)
+    df = df.dropna(subset=["RSI", "MACD"])
+    df = df[df["Gunning_Fog"] != 0]
+    print(f"\nDropped {before - len(df):,} rows with missing indicators")
+    print(f"Final dataset: {len(df):,} rows")
+
+    # ── 4. Summary ─────────────────────────────────────────────────────────
+    print("\nFeature summary:")
+    feat_cols = ["Gunning_Fog", "Flesch_Ease", "Sentiment",
+                 "Diff_Word_Ratio", "RSI", "MACD", "Volume_Change"]
+    print(df[feat_cols].describe().round(3).to_string())
+
+    df.to_parquet(OUTPUT_FILE, index=False)
+    print(f"\nSaved -> {OUTPUT_FILE}  ({len(df):,} rows)")
+    print("=" * 70)
+    print("DONE — next step: 05_baseline_model.py")
+    print("=" * 70)
+
 
 if __name__ == "__main__":
     main()
