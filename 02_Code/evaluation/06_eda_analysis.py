@@ -1,96 +1,152 @@
+import os
+import warnings
 import pandas as pd
+import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 
-# --- CONFIGURATION ---
+warnings.filterwarnings("ignore")
+matplotlib.use("Agg")
+
+# Setup paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
 DATA_DIR = os.path.join(PROJECT_ROOT, "01_Data")
-INPUT_FILE = os.path.join(DATA_DIR, "final_feature_dataset.csv")
-FIGURES_DIR = os.path.join(PROJECT_ROOT, "04_Results", "figures")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "04_Results", "eda")
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Create figures directory
-os.makedirs(FIGURES_DIR, exist_ok=True)
-
-# Set visual style for academic report
+# Plotting defaults
 sns.set_style("whitegrid")
-plt.rcParams.update({'font.size': 12})
+PALETTE = ["#2196F3", "#4CAF50", "#FF9800", "#F44336", "#9C27B0"]
 
-def run_eda():
-    print("Starting Exploratory Data Analysis...")
-    
-    if not os.path.exists(INPUT_FILE):
-        print("Error: Dataset not found.")
-        return
-    
-    df = pd.read_csv(INPUT_FILE)
-    
-    # Filter for the Medium Term target (Label_Month) as decided in Baseline
-    # Remove Neutrals (-1) to match our modeling approach
-    target_col = 'Label_Month'
-    df_clean = df[df[target_col] != -1].copy()
-    
-    # Map numeric labels to text for better plotting
-    df_clean['Direction'] = df_clean[target_col].map({0: 'Down', 1: 'Up'})
-    
-    print(f"Analyzing {len(df_clean)} samples (Neutrals removed).")
+def save(fig, name):
+    path = os.path.join(RESULTS_DIR, name)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {path}")
 
-    # --- PLOT 1: Class Imbalance ---
-    plt.figure(figsize=(6, 5))
-    ax = sns.countplot(x='Direction', data=df_clean, palette='viridis', order=['Down', 'Up'])
-    plt.title('Distribution of Target Labels (Medium Term)')
-    plt.xlabel('Stock Direction')
-    plt.ylabel('Count')
-    
-    # Add count labels on top of bars
+def main():
+    # Load datasets
+    df = pd.read_parquet(os.path.join(DATA_DIR, "labeled_dataset.parquet"))
+    meta = pd.read_csv(os.path.join(DATA_DIR, "sec_metadata.csv"))
+
+    # Date normalization
+    df["filing_date"] = pd.to_datetime(df["filing_date"]).dt.tz_localize(None)
+    df["year"] = df["filing_date"].dt.year
+
+    meta["filing_date"] = pd.to_datetime(
+        meta["filing_date"].astype(str), format="%Y%m%d", errors="coerce"
+    )
+    meta["year"] = meta["filing_date"].dt.year
+
+    print(f"Loaded {len(df):,} chunks and {len(meta):,} filings.")
+
+    # Figure 1: Label distribution across horizons
+    print("Generating Figure 1...")
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    fig.suptitle("Label Distribution Across Prediction Horizons", fontsize=13, fontweight="bold")
+
+    label_colors = {-1: "#F44336", 0: "#9E9E9E", 1: "#4CAF50"}
+    label_names = {-1: "DOWN", 0: "FLAT", 1: "UP"}
+
+    for ax, col, title in zip(
+        axes,
+        ["Label_T5", "Label_T10", "Label_T20"],
+        ["T+5 (1 week)", "T+10 (2 weeks)", "T+20 (1 month)"]
+    ):
+        filing_labels = (df.groupby(["ticker", "filing_date"])[col]
+                         .first()
+                         .value_counts()
+                         .sort_index())
+        
+        bar_colors = [label_colors.get(int(i), "#2196F3") for i in filing_labels.index]
+        x_labels = [label_names.get(int(i), str(i)) for i in filing_labels.index]
+
+        ax.bar(x_labels, filing_labels.values, color=bar_colors)
+        ax.set_title(title)
+        ax.set_xlabel("Label")
+        ax.set_ylabel("Number of filings")
+        for i, v in enumerate(filing_labels.values):
+            ax.text(i, v + 5, f"{int(v):,}", ha="center", va="bottom", fontsize=9)
+
+    plt.tight_layout()
+    save(fig, "fig1_label_distributions.png")
+
+    # Figure 2: Filing timeline
+    print("Generating Figure 2...")
+    fig, ax = plt.subplots(figsize=(12, 5))
+    timeline = meta.groupby(["year", "form_type"]).size().unstack(fill_value=0)
+    timeline.plot(kind="bar", ax=ax, color=["#2196F3", "#FF9800"], rot=0)
+    ax.set_title("SEC Filings by Year and Type", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Number of filings")
+    ax.legend(title="Form type")
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    save(fig, "fig2_filing_timeline.png")
+
+    # Figure 3: Chunk length distribution
+    print("Generating Figure 3...")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.hist(df["token_len"], bins=50, color="#2196F3", edgecolor="white", alpha=0.8)
+    ax.axvline(df["token_len"].mean(), color="#F44336", linestyle="--", linewidth=2,
+               label=f"Mean = {df['token_len'].mean():.0f}")
+    ax.axvline(512, color="#FF9800", linestyle="--", linewidth=2, label="Max (512)")
+    ax.set_title("Token Length Distribution Across Chunks", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Token length")
+    ax.set_ylabel("Frequency")
+    ax.legend()
+    plt.tight_layout()
+    save(fig, "fig3_chunk_lengths.png")
+
+    # Figure 4: Section coverage
+    print("Generating Figure 4...")
+    section_counts = df.groupby("section").size()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    section_counts.sort_values().plot(kind="barh", ax=ax, color=PALETTE[:len(section_counts)])
+    ax.set_title("Chunks per SEC Filing Section", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Number of chunks")
     for p in ax.patches:
-        ax.annotate(f'{int(p.get_height())}', (p.get_x() + 0.35, p.get_height() + 5))
-    
-    save_path_1 = os.path.join(FIGURES_DIR, "class_distribution.png")
-    plt.savefig(save_path_1, dpi=300)
-    print(f"Saved Plot 1: {save_path_1}")
+        ax.annotate(f"{int(p.get_width()):,}",
+                    (p.get_width(), p.get_y() + p.get_height()/2),
+                    ha="left", va="center", fontsize=9, color="black")
+    plt.tight_layout()
+    save(fig, "fig4_section_coverage.png")
 
-    # --- PLOT 2: Feature vs Target (Violin Plot) ---
-    # Does 'Gunning Fog' (Readability) actually differ between UP and DOWN stocks?
-    plt.figure(figsize=(8, 6))
-    sns.violinplot(x='Direction', y='Gunning_Fog', data=df_clean, palette='muted', order=['Down', 'Up'])
-    plt.title('Readability (Gunning Fog) by Stock Direction')
-    plt.xlabel('Stock Direction')
-    plt.ylabel('Gunning Fog Index (Higher = More Complex)')
-    
-    save_path_2 = os.path.join(FIGURES_DIR, "readability_vs_direction.png")
-    plt.savefig(save_path_2, dpi=300)
-    print(f"Saved Plot 2: {save_path_2}")
+    # Figure 5: Label distribution by form type
+    print("Generating Figure 5...")
+    filing_df = df.groupby(["ticker", "filing_date", "form_type"])["Label_T20"].first().reset_index()
+    filing_df["label_str"] = filing_df["Label_T20"].map({-1: "DOWN", 0: "FLAT", 1: "UP"})
 
-    # --- PLOT 3: Sentiment vs Target ---
-    # Checking if Sentiment separates the classes better than Readability
-    plt.figure(figsize=(8, 6))
-    sns.boxplot(x='Direction', y='Sentiment', data=df_clean, palette='coolwarm', order=['Down', 'Up'])
-    plt.title('VADER Sentiment Score by Stock Direction')
-    plt.xlabel('Stock Direction')
-    plt.ylabel('Compound Sentiment Score')
-    
-    save_path_3 = os.path.join(FIGURES_DIR, "sentiment_vs_direction.png")
-    plt.savefig(save_path_3, dpi=300)
-    print(f"Saved Plot 3: {save_path_3}")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle("Label Distribution by Form Type (T+20)", fontsize=13, fontweight="bold")
 
-    # --- PLOT 4: Correlation Matrix ---
-    # Check if our features are redundant (highly correlated)
-    cols_to_corr = [
-        'Gunning_Fog', 'Flesch_Ease', 'Sentiment', 
-        'RSI', 'MACD', 'Volume_Change', 'Return_Month'
-    ]
-    plt.figure(figsize=(10, 8))
-    corr = df_clean[cols_to_corr].corr()
-    sns.heatmap(corr, annot=True, cmap='RdBu', center=0, fmt='.2f')
-    plt.title('Feature Correlation Matrix')
-    
-    save_path_4 = os.path.join(FIGURES_DIR, "correlation_matrix.png")
-    plt.savefig(save_path_4, dpi=300)
-    print(f"Saved Plot 4: {save_path_4}")
+    label_color_map = {"DOWN": "#F44336", "FLAT": "#9E9E9E", "UP": "#4CAF50"}
 
-    print("EDA Complete. Check the '04_Results/figures' folder.")
+    for ax, form in zip(axes, ["10-K", "10-Q"]):
+        subset = filing_df[filing_df["form_type"] == form]
+        counts = subset["label_str"].value_counts().sort_index()
+        bar_colors = [label_color_map.get(l, "#2196F3") for l in counts.index]
+        ax.pie(counts.values, labels=counts.index, colors=bar_colors, autopct="%1.1f%%", startangle=90)
+        ax.set_title(f"{form} ({len(subset):,} filings)")
+
+    plt.tight_layout()
+    save(fig, "fig5_labels_by_form_type.png")
+
+    # Figure 6: Top tickers by filing count
+    print("Generating Figure 6...")
+    ticker_counts = meta.groupby("ticker").size().sort_values(ascending=False).head(20)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ticker_counts.plot(kind="bar", ax=ax, color="#2196F3", rot=45)
+    ax.set_title("Top 20 Tickers by Filing Count", fontsize=13, fontweight="bold")
+    ax.set_xlabel("Ticker")
+    ax.set_ylabel("Number of filings")
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    save(fig, "fig6_top_tickers.png")
+
+    print(f"Analysis complete. Results saved to: {RESULTS_DIR}")
 
 if __name__ == "__main__":
-    run_eda()
+    main()
