@@ -1,9 +1,6 @@
-Strategy,Trades,Mean Return %,Median Return %,Std %,Win Rate %,Avg Win %,Avg Loss %,Total Return %,Sharpe (annualised),Max Single Loss %,Max Single Win %
-Buy All Filings (Baseline),93,2.34,7.26,12.93,64.5,10.87,-13.18,275.79,0.626,-45.52,31.75
-Skip Top 10% Risk (Long Only),83,2.51,7.29,13.09,65.1,10.96,-13.23,267.21,0.664,-45.52,31.75
-Skip Top 15% Risk (Long Only),79,2.76,7.29,13.06,65.8,11.03,-13.17,319.49,0.732,-45.52,31.75
-Skip Top 20% Risk (Long Only),74,2.42,7.23,13.17,64.9,10.89,-13.22,195.33,0.636,-45.52,31.75
-Skip Top 25% Risk (Long Only),69,3.08,7.26,12.69,66.7,10.86,-12.48,349.99,0.841,-45.52,31.75
-Long Safe / Short Top 10% (L/S),93,2.14,7.26,12.97,62.4,11.09,-12.69,214.05,0.572,-45.52,31.75
-Long Safe / Short Top 15% (L/S),93,2.35,7.24,12.93,62.4,11.26,-12.41,283.51,0.63,-45.52,31.75
-Long Safe / Short Top 20% (L/S),93,1.51,6.93,13.05,59.1,11.16,-12.45,74.98,0.402,-45.52,31.75
+strategy,trades,win_rate,avg_return,total_return,sharpe,sortino,max_drawdown,final_equity
+Strategy A: All UP signals,309.0,0.6311,0.0232,0.4419,1.0815,2.0258,-0.0519,14418.92
+Strategy B: High Confidence (>=0.72),124.0,0.6774,0.0359,0.519,1.6758,4.299,-0.0532,15189.91
+Strategy C: Sector-Filtered (Fin+Tech),89.0,0.7191,0.0358,0.431,1.8646,4.2949,-0.037,14309.59
+Strategy D: 2x Leveraged,124.0,0.6532,0.0325,0.7153,1.5136,4.5049,-0.0698,17152.99
+SPY Benchmark,,,,0.8269,,,,18268.86

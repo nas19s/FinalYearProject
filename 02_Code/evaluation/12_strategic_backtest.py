@@ -1,277 +1,283 @@
-"""
-12_strategic_backtest.py — Event-Driven Backtest: FinBERT Risk-Ranked Portfolio
-Each SEC filing = one independent trade. FinBERT reads the filing,
-decides to BUY (hold 1 month) or SKIP. Compare average per-trade
-returns against a naive "buy every filing" baseline.
-"""
-
 import os
-import torch
+import warnings
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
-from transformers import BertForSequenceClassification
 
-# ── Paths ──────────────────────────────────────────────────────────────────
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+warnings.filterwarnings("ignore")
+import matplotlib
+matplotlib.use("Agg")
+
+# Path configuration
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
-DATA_DIR     = os.path.join(PROJECT_ROOT, "01_Data")
-TENSOR_PATH  = os.path.join(PROJECT_ROOT, "03_Models", "finbert_tensors.pt")
-CSV_PATH     = os.path.join(DATA_DIR, "final_feature_dataset.csv")
-MODEL_PATH   = os.path.join(PROJECT_ROOT, "03_Models", "finbert_champion")
-RESULTS_DIR  = os.path.join(PROJECT_ROOT, "04_Results", "backtest")
-
-TARGET_COL     = "Label_Month"
-BATCH_SIZE     = 8
-VAL_SPLIT      = 0.15
-RANDOM_SEED    = 42
-
+DATA_DIR = os.path.join(PROJECT_ROOT, "01_Data")
+PRICES_DIR = os.path.join(DATA_DIR, "prices")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "04_Results", "backtest")
+METRICS_DIR = os.path.join(PROJECT_ROOT, "04_Results", "metrics")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# Simulation Parameters
+HOLD_DAYS = 20
+INITIAL_CAP = 10000.0
+MAX_POSITION = 0.20
+TRANSACTION_COST = 0.001
+CONF_THRESHOLD = 0.72
+MARGIN_RATE = 0.02 / 252
+STOP_LOSS_D = -0.08
 
-def get_device():
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+SECTOR_MAP = {
+    "AAPL": "Technology",   "MSFT": "Technology",  "NVDA": "Technology",
+    "GOOGL": "Technology",  "META": "Technology",   "AVGO": "Technology",
+    "ORCL": "Technology",   "CRM": "Technology",    "AMD": "Technology",
+    "INTC": "Technology",   "QCOM": "Technology",   "TXN": "Technology",
+    "AMZN": "Consumer",     "TSLA": "Consumer",     "HD": "Consumer",
+    "MCD": "Consumer",      "NKE": "Consumer",      "SBUX": "Consumer",
+    "WMT": "Consumer",      "COST": "Consumer",      "TGT": "Consumer",
+    "JPM": "Financials",    "BAC": "Financials",    "WFC": "Financials",
+    "GS": "Financials",     "MS": "Financials",     "BRK-B": "Financials",
+    "V": "Financials",      "MA": "Financials",     "AXP": "Financials",
+    "JNJ": "Healthcare",    "UNH": "Healthcare",    "PFE": "Healthcare",
+    "ABBV": "Healthcare",   "MRK": "Healthcare",    "ABT": "Healthcare",
+    "LLY": "Healthcare",    "TMO": "Healthcare",
+    "XOM": "Energy",        "CVX": "Energy",        "COP": "Energy",
+    "NEE": "Utilities",     "DUK": "Utilities",
+    "CAT": "Industrials",   "HON": "Industrials",   "UPS": "Industrials",
+    "BA": "Industrials",    "RTX": "Industrials",
+    "LIN": "Materials",     "APD": "Materials",
+}
 
+GOOD_SECTORS = {"Financials", "Technology"}
 
-def trade_metrics(returns: np.ndarray, label: str) -> dict:
-    """Compute per-trade statistics for a set of trade returns."""
-    n = len(returns)
-    if n == 0:
-        return {
-            "Strategy": label, "Trades": 0, "Mean Return %": 0,
-            "Median Return %": 0, "Std %": 0, "Win Rate %": 0,
-            "Avg Win %": 0, "Avg Loss %": 0, "Total Return %": 0,
-            "Sharpe (per-trade)": 0, "Max Single Loss %": 0,
-            "Max Single Win %": 0,
-        }
-    wins     = returns[returns > 0]
-    losses   = returns[returns <= 0]
-    win_rate = len(wins) / n * 100
-    # Total return if you allocated equally to each trade
-    total    = np.prod(1 + returns) - 1
+def load_prices(ticker):
+    for suffix in ("_prices.csv", ".csv"):
+        path = os.path.join(PRICES_DIR, f"{ticker}{suffix}")
+        if os.path.exists(path):
+            try:
+                df = pd.read_csv(path, parse_dates=["Date"])
+                df = df.sort_values("Date").set_index("Date")
+                df.index = pd.to_datetime(df.index)
+                return df
+            except Exception:
+                return None
+    return None
 
-    sharpe = 0.0
-    if returns.std() > 0:
-        sharpe = (returns.mean() / returns.std()) * np.sqrt(12)  # annualise monthly
+def load_spy():
+    for name in ("SPY_prices.csv", "SPY.csv", "spy_prices.csv", "spy.csv"):
+        path = os.path.join(PRICES_DIR, name)
+        if os.path.exists(path):
+            try:
+                df = pd.read_csv(path, parse_dates=["Date"])
+                df = df.sort_values("Date").set_index("Date")
+                df.index = pd.to_datetime(df.index)
+                return df
+            except Exception:
+                continue
+    return None
+
+def get_trade_return(prices, entry_date, stop_loss=None):
+    future = prices[prices.index > entry_date].head(HOLD_DAYS + 10)
+    if len(future) < 2:
+        return 0.0, 0
+
+    entry_price = future.iloc[0]["Open"]
+    if pd.isna(entry_price) or entry_price <= 0:
+        return 0.0, 0
+
+    for i in range(1, min(HOLD_DAYS + 1, len(future))):
+        row = future.iloc[i]
+        raw_ret = (row["Open"] - entry_price) / entry_price
+
+        if stop_loss is not None and raw_ret <= stop_loss:
+            return stop_loss - TRANSACTION_COST, i
+
+        if i == HOLD_DAYS or i == len(future) - 1:
+            return raw_ret - TRANSACTION_COST, i
+    return 0.0, 0
+
+def run_backtest(signals, name, leveraged=False):
+    signals = signals.sort_values("filing_date").reset_index(drop=True)
+    trades = []
+    capital = INITIAL_CAP
+    open_trades = []
+
+    for _, row in signals.iterrows():
+        ticker = row["ticker"]
+        entry_date = pd.to_datetime(row["filing_date"])
+        prices = load_prices(ticker)
+        if prices is None:
+            continue
+
+        still_open = []
+        for t in open_trades:
+            if t["exit_date"] <= entry_date:
+                capital += t["allocated"] * t["return"]
+            else:
+                still_open.append(t)
+        open_trades = still_open
+
+        if leveraged:
+            position_size = min(capital * MAX_POSITION * 2, capital * 0.40)
+        else:
+            n_open = len(open_trades) + 1
+            position_size = min(capital * MAX_POSITION, capital / n_open)
+
+        position_size = max(position_size, 0)
+        if position_size < 10:
+            continue
+
+        stop = STOP_LOSS_D if leveraged else None
+        ret, days = get_trade_return(prices, entry_date, stop_loss=stop)
+
+        if leveraged:
+            ret -= MARGIN_RATE * days
+
+        future_dates = prices[prices.index > entry_date].head(days + 2)
+        if len(future_dates) > days:
+            exit_date = future_dates.index[days]
+        else:
+            exit_date = entry_date + pd.Timedelta(days=int(days * 1.4))
+
+        capital -= position_size
+        open_trades.append({
+            "exit_date": exit_date,
+            "return": 1 + ret,
+            "allocated": position_size,
+        })
+
+        trades.append({
+            "ticker": ticker,
+            "entry_date": entry_date,
+            "exit_date": exit_date,
+            "return": ret,
+            "days_held": days,
+            "allocated": position_size,
+            "strategy": name,
+        })
+
+    for t in open_trades:
+        capital += t["allocated"] * t["return"]
+
+    return pd.DataFrame(trades), capital
+
+def compute_equity_curve(trades_df, initial_cap=10000.0):
+    if trades_df.empty:
+        return pd.Series([initial_cap])
+    t = trades_df.sort_values("entry_date").reset_index(drop=True)
+    capital = initial_cap
+    curve = [initial_cap]
+    for _, row in t.iterrows():
+        capital += row["allocated"] * row["return"]
+        curve.append(capital)
+    return pd.Series(curve)
+
+def compute_metrics(trades_df, final_capital, name):
+    r = trades_df["return"]
+    eq = compute_equity_curve(trades_df)
+    win_rate = (r > 0).mean()
+    avg_ret = r.mean()
+    total_r = (final_capital - INITIAL_CAP) / INITIAL_CAP
+    
+    sharpe = (r.mean() / r.std() * np.sqrt(252 / HOLD_DAYS) if r.std() > 0 else 0.0)
+    
+    downside = r[r < 0]
+    down_std = downside.std() if len(downside) > 1 else 1e-9
+    sortino = (r.mean() / down_std * np.sqrt(252 / HOLD_DAYS) if down_std > 0 else 0.0)
+    
+    peak = eq.cummax()
+    mdd = ((eq - peak) / peak).min()
+
+    print(f"\nResults for {name}:")
+    print(f"  Total return: {total_r:.2%}")
+    print(f"  Sharpe: {sharpe:.3f}")
+    print(f"  Max Drawdown: {mdd:.2%}")
 
     return {
-        "Strategy":           label,
-        "Trades":             n,
-        "Mean Return %":      round(returns.mean() * 100, 2),
-        "Median Return %":    round(np.median(returns) * 100, 2),
-        "Std %":              round(returns.std() * 100, 2),
-        "Win Rate %":         round(win_rate, 1),
-        "Avg Win %":          round(wins.mean() * 100, 2) if len(wins) > 0 else 0,
-        "Avg Loss %":         round(losses.mean() * 100, 2) if len(losses) > 0 else 0,
-        "Total Return %":     round(total * 100, 2),
-        "Sharpe (annualised)": round(sharpe, 3),
-        "Max Single Loss %":  round(returns.min() * 100, 2),
-        "Max Single Win %":   round(returns.max() * 100, 2),
+        "strategy": name,
+        "trades": len(r),
+        "win_rate": round(win_rate, 4),
+        "avg_return": round(avg_ret, 4),
+        "total_return": round(total_r, 4),
+        "sharpe": round(sharpe, 4),
+        "sortino": round(sortino, 4),
+        "max_drawdown": round(mdd, 4),
+        "final_equity": round(final_capital, 2),
     }
 
-
 def main():
-    print("=" * 65)
-    print("  Event-Driven Backtest — FinBERT Risk-Ranked Portfolio")
-    print("=" * 65)
+    print("Starting backtest execution...")
+    preds = pd.read_csv(os.path.join(METRICS_DIR, "voting_ensemble_predictions.csv"))
+    preds["filing_date"] = pd.to_datetime(preds["filing_date"]).dt.tz_localize(None)
+    preds["sector"] = preds["ticker"].map(SECTOR_MAP).fillna("Other")
+    preds = preds.sort_values("filing_date").reset_index(drop=True)
 
-    device = get_device()
-    print(f"Device: {device}\n")
+    # Strategy A
+    signals_a = preds[preds["pred_label"] == 1].copy()
+    trades_a, final_a = run_backtest(signals_a, "Strategy A (all UP)")
 
-    # ── Load data ──────────────────────────────────────────────────────────
-    df       = pd.read_csv(CSV_PATH)
-    df_clean = df[df[TARGET_COL] != -1].copy()
+    # Strategy B
+    signals_b = preds[(preds["pred_label"] == 1) & (preds["confidence"] >= CONF_THRESHOLD)].copy()
+    trades_b, final_b = run_backtest(signals_b, f"Strategy B (conf>={CONF_THRESHOLD})")
 
-    # ── Load tensors and reconstruct val split ─────────────────────────────
-    print("Loading tensors...")
-    data      = torch.load(TENSOR_PATH, map_location="cpu")
-    input_ids = data["input_ids"]
-    attn_mask = data["attention_mask"]
-    labels    = data["labels"]
+    # Strategy C
+    signals_c = preds[(preds["pred_label"] == 1) & (preds["sector"].isin(GOOD_SECTORS))].copy()
+    trades_c, final_c = run_backtest(signals_c, "Strategy C (Fin+Tech only)")
 
-    indices = list(range(len(labels)))
-    _, val_idx = train_test_split(
-        indices,
-        test_size=VAL_SPLIT,
-        random_state=RANDOM_SEED,
-        stratify=labels.numpy(),
-    )
+    # Strategy D
+    trades_d, final_d = run_backtest(signals_b.copy(), "Strategy D (2x leveraged)", leveraged=True)
 
-    val_idx_t  = torch.tensor(val_idx)
-    val_ds     = TensorDataset(
-        input_ids[val_idx_t], attn_mask[val_idx_t], labels[val_idx_t]
-    )
-    dataloader = DataLoader(
-        val_ds, sampler=SequentialSampler(val_ds), batch_size=BATCH_SIZE
-    )
-
-    # Align CSV rows to val indices
-    test_df = df_clean.iloc[val_idx].copy().reset_index(drop=True)
-    test_df["join_date"] = pd.to_datetime(test_df["join_date"])
-
-    # ── Load model & predict ───────────────────────────────────────────────
-    print("Loading FinBERT...")
-    model = BertForSequenceClassification.from_pretrained(MODEL_PATH)
-    model.to(device)
-    model.eval()
-
-    print("Generating P(Down) for each filing...\n")
-    all_down_probs = []
-    for batch in dataloader:
-        ids, mask, _ = [t.to(device) for t in batch]
-        with torch.no_grad():
-            logits = model(ids, token_type_ids=None, attention_mask=mask).logits
-        probs = torch.softmax(logits, dim=1).cpu().numpy()
-        all_down_probs.extend(probs[:, 0])
-
-    test_df["Down_Prob"]    = all_down_probs
-    test_df["Return_Month"] = test_df["Return_Month"].astype(float)
-
-    # ── Baseline: Buy every filing ─────────────────────────────────────────
-    all_returns = test_df["Return_Month"].values
-    baseline    = trade_metrics(all_returns, "Buy All Filings (Baseline)")
-
-    # ── Strategy variants ──────────────────────────────────────────────────
-    print("Running strategies across thresholds...\n")
-    results = [baseline]
-
-    # Long-only: skip risky filings
-    for skip_pct in [10, 15, 20, 25]:
-        risk_pct  = 100 - skip_pct
-        threshold = np.percentile(all_down_probs, risk_pct)
-        mask_safe = test_df["Down_Prob"] < threshold
-        safe_ret  = test_df.loc[mask_safe, "Return_Month"].values
-        label     = f"Skip Top {skip_pct}% Risk (Long Only)"
-        results.append(trade_metrics(safe_ret, label))
-
-    # Long-short: buy safe, short risky
-    for skip_pct in [10, 15, 20]:
-        risk_pct  = 100 - skip_pct
-        threshold = np.percentile(all_down_probs, risk_pct)
-        safe_ret  = test_df.loc[test_df["Down_Prob"] < threshold, "Return_Month"].values
-        risky_ret = test_df.loc[test_df["Down_Prob"] >= threshold, "Return_Month"].values
-        # Short returns: profit when stock goes down
-        short_ret = -risky_ret
-        combined  = np.concatenate([safe_ret, short_ret])
-        label     = f"Long Safe / Short Top {skip_pct}% (L/S)"
-        results.append(trade_metrics(combined, label))
-
-    # ── Results table ──────────────────────────────────────────────────────
-    summary_df = pd.DataFrame(results)
-
-    print("=" * 100)
-    print("BACKTEST RESULTS — PER-TRADE ANALYSIS")
-    print("=" * 100)
-    # Display key columns
-    display_cols = [
-        "Strategy", "Trades", "Mean Return %", "Win Rate %",
-        "Sharpe (annualised)", "Total Return %", "Max Single Loss %"
+    results = []
+    eq_curves = {}
+    
+    backtest_data = [
+        (trades_a, final_a, "Strategy A: All UP signals"),
+        (trades_b, final_b, f"Strategy B: High Confidence (>={CONF_THRESHOLD})"),
+        (trades_c, final_c, "Strategy C: Sector-Filtered (Fin+Tech)"),
+        (trades_d, final_d, "Strategy D: 2x Leveraged"),
     ]
-    print(summary_df[display_cols].to_string(index=False))
 
-    csv_path = os.path.join(RESULTS_DIR, "backtest_summary.csv")
-    summary_df.to_csv(csv_path, index=False)
-    print(f"\nFull summary saved → {csv_path}")
+    for trades, final, name in backtest_data:
+        if not trades.empty:
+            results.append(compute_metrics(trades, final, name))
+            eq_curves[name] = compute_equity_curve(trades)
 
-    # ── Plot 1: Per-trade return distributions ─────────────────────────────
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # Benchmark Comparison
+    spy = load_spy()
+    if spy is not None:
+        start, end = preds["filing_date"].min(), preds["filing_date"].max()
+        spy_p = spy[(spy.index >= start) & (spy.index <= end)]["Close"]
+        if len(spy_p) > 1:
+            spy_ret = (spy_p.iloc[-1] - spy_p.iloc[0]) / spy_p.iloc[0]
+            spy_daily = spy_p.pct_change().dropna()
+            spy_eq_raw = (1 + spy_daily).cumprod() * INITIAL_CAP
+            spy_eq = pd.concat([pd.Series([INITIAL_CAP]), spy_eq_raw], ignore_index=True)
+            results.append({
+                "strategy": "SPY Benchmark",
+                "total_return": round(spy_ret, 4),
+                "final_equity": round(INITIAL_CAP * (1 + spy_ret), 2)
+            })
 
-    # Top-left: Histogram of P(Down) scores
-    ax = axes[0, 0]
-    ax.hist(all_down_probs, bins=30, color="steelblue", edgecolor="white", alpha=0.8)
-    for pct in [80, 85, 90]:
-        thresh = np.percentile(all_down_probs, pct)
-        ax.axvline(thresh, color="red", linestyle="--", alpha=0.6,
-                   label=f"Top {100-pct}% threshold: {thresh:.3f}")
-    ax.set_title("Distribution of FinBERT P(Down) Scores", fontsize=12)
-    ax.set_xlabel("P(Down)")
-    ax.set_ylabel("Count")
-    ax.legend(fontsize=8)
+    # Visualizations
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    ax = axes[0]
+    for name, eq in eq_curves.items():
+        ax.plot(eq.values, label=name, linewidth=2)
+    ax.set_title("Portfolio Equity Curves")
+    ax.legend(fontsize=7)
 
-    # Top-right: Box plot comparing trade returns
-    ax = axes[0, 1]
-    threshold_85 = np.percentile(all_down_probs, 85)
-    safe_mask    = test_df["Down_Prob"] < threshold_85
-    safe_rets    = test_df.loc[safe_mask, "Return_Month"].values * 100
-    risky_rets   = test_df.loc[~safe_mask, "Return_Month"].values * 100
-    bp = ax.boxplot(
-        [safe_rets, risky_rets, all_returns * 100],
-        labels=["Safe (Bottom 85%)", "Risky (Top 15%)", "All Filings"],
-        patch_artist=True,
-        showmeans=True,
-        meanprops={"marker": "D", "markerfacecolor": "red", "markersize": 6},
-    )
-    colours = ["#2ecc71", "#e74c3c", "#3498db"]
-    for patch, colour in zip(bp["boxes"], colours):
-        patch.set_facecolor(colour)
-        patch.set_alpha(0.5)
-    ax.set_title("Trade Return Distribution by Risk Group", fontsize=12)
-    ax.set_ylabel("1-Month Return (%)")
-    ax.axhline(0, color="grey", linestyle=":", linewidth=1)
-    ax.grid(True, alpha=0.3, axis="y")
+    ax2 = axes[1]
+    for label, trades in [("A", trades_a), ("B", trades_b), ("C", trades_c), ("D", trades_d)]:
+        if not trades.empty:
+            ax2.hist(trades["return"], bins=25, alpha=0.5, label=label)
+    ax2.set_title("Return Distribution")
+    ax2.legend(fontsize=7)
 
-    # Bottom-left: Mean return comparison bar chart
-    ax = axes[1, 0]
-    long_only_results = [r for r in results if "Long Only" in r["Strategy"] or "Baseline" in r["Strategy"]]
-    names   = [r["Strategy"].replace(" (Long Only)", "").replace(" (Baseline)", "")
-               for r in long_only_results]
-    means   = [r["Mean Return %"] for r in long_only_results]
-    bar_colors = ["#3498db"] + ["#2ecc71"] * (len(means) - 1)
-    bars = ax.bar(range(len(names)), means, color=bar_colors, edgecolor="white")
-    ax.set_xticks(range(len(names)))
-    ax.set_xticklabels(names, rotation=25, ha="right", fontsize=9)
-    ax.set_title("Mean Per-Trade Return by Strategy", fontsize=12)
-    ax.set_ylabel("Mean Return (%)")
-    ax.axhline(0, color="grey", linestyle=":", linewidth=1)
-    ax.grid(True, alpha=0.3, axis="y")
-    for bar, val in zip(bars, means):
-        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
-                f"{val:.1f}%", ha="center", va="bottom", fontsize=9, fontweight="bold")
-
-    # Bottom-right: Sharpe ratio comparison
-    ax = axes[1, 1]
-    all_strat_names  = [r["Strategy"].split("(")[0].strip() for r in results]
-    all_strat_sharpe = [r["Sharpe (annualised)"] for r in results]
-    bar_colors = []
-    for r in results:
-        if "Baseline" in r["Strategy"]:
-            bar_colors.append("#3498db")
-        elif "L/S" in r["Strategy"]:
-            bar_colors.append("#9b59b6")
-        else:
-            bar_colors.append("#2ecc71")
-    bars = ax.barh(range(len(all_strat_names)), all_strat_sharpe,
-                   color=bar_colors, edgecolor="white")
-    ax.set_yticks(range(len(all_strat_names)))
-    ax.set_yticklabels(all_strat_names, fontsize=8)
-    ax.set_title("Annualised Sharpe Ratio by Strategy", fontsize=12)
-    ax.set_xlabel("Sharpe Ratio")
-    ax.axvline(0, color="grey", linestyle=":", linewidth=1)
-    ax.grid(True, alpha=0.3, axis="x")
-    for bar, val in zip(bars, all_strat_sharpe):
-        ax.text(val + 0.02, bar.get_y() + bar.get_height()/2,
-                f"{val:.3f}", ha="left", va="center", fontsize=9)
-
-    plt.suptitle("FinBERT Event-Driven Backtest Analysis", fontsize=14, fontweight="bold", y=1.01)
     plt.tight_layout()
-    plot_path = os.path.join(RESULTS_DIR, "equity_curve.png")
-    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Plot saved → {plot_path}")
+    plt.savefig(os.path.join(RESULTS_DIR, "backtest_equity_curves.png"))
 
-    # ── Interpretation ─────────────────────────────────────────────────────
-    best = max(results, key=lambda r: r["Sharpe (annualised)"])
-    print(f"\n{'=' * 65}")
-    print(f"  Best strategy by Sharpe: {best['Strategy']}")
-    print(f"  Sharpe: {best['Sharpe (annualised)']:.3f}  |  "
-          f"Mean Return: {best['Mean Return %']:.2f}%  |  "
-          f"Win Rate: {best['Win Rate %']:.1f}%")
-    print(f"{'=' * 65}")
-
+    pd.concat([trades_a, trades_b, trades_c, trades_d]).to_csv(os.path.join(RESULTS_DIR, "backtest_trades.csv"), index=False)
+    pd.DataFrame(results).to_csv(os.path.join(RESULTS_DIR, "backtest_summary.csv"), index=False)
+    print("Backtest complete. Files saved.")
 
 if __name__ == "__main__":
     main()
