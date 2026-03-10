@@ -1,277 +1,143 @@
-import shap
-import torch
+import os
+import pickle
+import warnings
 import pandas as pd
 import numpy as np
-import os
-import re
+import matplotlib
 import matplotlib.pyplot as plt
-from transformers import BertTokenizer, BertForSequenceClassification
+from matplotlib.patches import Patch
+import shap
 
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+warnings.filterwarnings("ignore")
+matplotlib.use("Agg")
+
+# Project Path Configuration
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../"))
-DATA_DIR     = os.path.join(PROJECT_ROOT, "01_Data")
-TEXT_DIR     = os.path.join(DATA_DIR, "processed_sec")
-CSV_PATH     = os.path.join(DATA_DIR, "final_feature_dataset.csv")
-MODEL_PATH   = os.path.join(PROJECT_ROOT, "03_Models", "finbert_champion")
-RESULTS_DIR  = os.path.join(PROJECT_ROOT, "04_Results", "shap")
-
-SAMPLE_SIZE       = 5
-TARGET_COL        = 'Label_Month'
-WORDS_WANTED      = 350
-TOC_SKIP_FRACTION = 0.05
-MIN_WORDS         = 120   # raised from 60 — short extracts miss financial content
+DATA_DIR = os.path.join(PROJECT_ROOT, "01_Data")
+RESULTS_DIR = os.path.join(PROJECT_ROOT, "04_Results", "shap")
+METRICS_DIR = os.path.join(PROJECT_ROOT, "04_Results", "metrics")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "03_Models", "hybrid_ensemble")
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Financial signal words — if a passage lacks these, it's description not results
-FINANCIAL_SIGNALS = re.compile(
-    r'\b(revenue|revenues|net\s+sales|income|earnings|loss|losses|margin|margins|'
-    r'growth|decline|declin|decreas|increas|operating|cash\s+flow|quarter|fiscal|'
-    r'year.over.year|compared\s+to|period|results?\s+of\s+operations|'
-    r'basis\s+points|guidance|outlook|headwind|tailwind|impairment|charge)\b',
-    re.IGNORECASE,
-)
+TARGET_COL = "Label_T20"
 
-BOILERPLATE_RE = re.compile(
-    r'forward[\s\-]+looking\s+statements?'
-    r'|private\s+securities\s+litigation\s+reform\s+act'
-    r'|safe\s+harbor'
-    r'|table\s+of\s+contents'
-    r'|this\s+(annual|quarterly)\s+report\s+on\s+form\s+10'
-    r'|incorporated\s+herein\s+by\s+reference'
-    r'|refers\s+collectively\s+to'
-    r'|fiscal\s+(year|calendar)',
-    re.IGNORECASE,
-)
-TOC_LINE_RE = re.compile(r'\bItem\b.{5,120}?\s+\d{1,3}\s*$', re.IGNORECASE)
-XBRL_RE     = re.compile(r'(us-gaap:|dei:|[a-z]{2,6}:[A-Z][a-zA-Z]{5,}|0000\d{6}\s)')
-
-
-def is_garbage(text: str) -> bool:
-    if len(text) < 10:
-        return True
-    non_alpha = sum(1 for c in text if not (c.isalpha() or c.isspace() or c in '.,;:()%-'))
-    return (non_alpha / len(text)) > 0.25
-
-
-def normalise(raw: str) -> str:
-    text = re.sub(r'<[^>]{0,200}>', ' ', raw)
-    text = re.sub(r'&#\d+;', ' ', text)
-    text = re.sub(r'&[a-zA-Z]{2,8};', ' ', text)
-    text = text.replace('\xa0', ' ').replace('\u200b', '')
-    return ' '.join(text.split())
-
-
-def find_prose_start(text: str) -> int:
-    for marker in [r'<TEXT>', r'<DOCUMENT>', r'Item\s+1\.\s+Business']:
-        matches = list(re.finditer(marker, text, re.IGNORECASE))
-        if matches:
-            return matches[0].start()
-    for start in range(0, min(len(text), 500_000), 5000):
-        chunk = text[start: start + 5000]
-        if XBRL_RE.search(chunk):
-            continue
-        if sum(c.isalpha() or c.isspace() for c in chunk) / len(chunk) > 0.60:
-            return start
-    return 0
-
-
-def is_toc_region(window: str) -> bool:
-    lines = re.split(r'\s{2,}|\n', window.strip())
-    if len(lines) < 3:
-        return bool(re.search(r'\s\d{1,3}\s*$', window.strip()))
-    toc_hits = sum(1 for l in lines if re.search(r'\s\d{1,3}\s*$', l.strip()))
-    return (toc_hits / len(lines)) > 0.35
-
-
-def find_real_section(text: str, pattern: re.Pattern) -> int:
-    min_start = int(len(text) * TOC_SKIP_FRACTION)
-    for match in pattern.finditer(text):
-        if match.start() < min_start:
-            continue
-        body_start = match.end()
-        window     = text[body_start: body_start + 800]
-        if is_toc_region(window):
-            continue
-        if XBRL_RE.search(window):
-            continue
-        if is_garbage(window):
-            continue
-        if sum(c.isalpha() for c in window) / max(len(window), 1) < 0.40:
-            continue
-        return body_start
-    return -1
-
-
-def find_financial_paragraph(text: str, start: int, char_budget: int = 15000) -> int:
-    """
-    Starting from `start`, scan forward in paragraph-sized chunks.
-    Return the position of the first chunk that contains >= 2 financial
-    signal words. This skips the business-description opener that many
-    MD&A sections begin with before getting to actual financial results.
-    """
-    chunk_size = 500   # ~80 words per chunk
-    end        = min(start + char_budget, len(text))
-
-    pos = start
-    while pos < end:
-        chunk = text[pos: pos + chunk_size]
-        if len(FINANCIAL_SIGNALS.findall(chunk)) >= 2:
-            return pos
-        # Advance by half a chunk so we don't miss a paragraph boundary
-        pos += chunk_size // 2
-
-    # Nothing found — return original start (better than nothing)
-    return start
-
-
-def clean_snippet(raw: str, words_wanted: int = WORDS_WANTED) -> str:
-    sentences = re.split(r'(?<=[.!?])\s+', raw)
-    good = [
-        s for s in sentences
-        if not is_garbage(s)
-        and not BOILERPLATE_RE.search(s)
-        and not TOC_LINE_RE.search(s)
-        and not XBRL_RE.search(s)
-        and len(s.split()) > 3
-    ]
-    return ' '.join(' '.join(good).split()[:words_wanted])
-
-
-def extract_section(filename: str) -> str:
-    path = os.path.join(TEXT_DIR, filename)
-    if not os.path.exists(path):
-        print(f"  [WARN] File not found: {filename}")
-        return ""
-
-    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-        raw = f.read()
-
-    text        = normalise(raw)
-    prose_start = find_prose_start(text)
-    text        = text[prose_start:]
-
-    candidates = [
-        ("MD&A (Item 7)",
-         re.compile(r"\bITEM\s+7\.?\s+MANAGEMENT", re.IGNORECASE)),
-        ("MD&A 10-Q (Item 2)",
-         re.compile(r"\bITEM\s+2\.?\s+MANAGEMENT", re.IGNORECASE)),
-        ("Risk Factors (Item 1A)",
-         re.compile(r"\bITEM\s+1A\.?\s+RISK\s+FACTOR", re.IGNORECASE)),
-    ]
-
-    for section_name, pattern in candidates:
-        section_start = find_real_section(text, pattern)
-        if section_start == -1:
-            continue
-
-        # Skip past any business-description opener to find financial results
-        financial_start = find_financial_paragraph(text, section_start)
-        if financial_start != section_start:
-            print(f"  [SKIP opener] Advanced {financial_start - section_start} chars to financial content")
-
-        result = clean_snippet(text[financial_start: financial_start + WORDS_WANTED * 7])
-
-        if len(result.split()) < MIN_WORDS:
-            print(f"  [SKIP] '{section_name}' in {filename} — only {len(result.split())} words.")
-            continue
-
-        sig_count = len(FINANCIAL_SIGNALS.findall(result))
-        print(f"  [OK]  '{section_name}' from {filename} "
-              f"({len(result.split())} words, {sig_count} financial signals)")
-        return result
-
-    # Fallback
-    print(f"  [FALLBACK] {filename} — using 20% skip.")
-    words  = text.split()
-    skip   = int(len(words) * 0.20) if len(words) > 5000 else min(200, len(words) // 4)
-    result = clean_snippet(' '.join(words[skip: skip + WORDS_WANTED * 7]))
-    return result if len(result.split()) > 30 else ""
-
+# Mapping for dissertation-ready labels
+FEATURE_LABELS = {
+    "RSI": "RSI (Momentum)",
+    "MACD": "MACD (Trend)",
+    "Volume_Change": "Volume Change",
+    "Gunning_Fog": "Gunning Fog (Readability)",
+    "Flesch_Ease": "Flesch Reading Ease",
+    "Sentiment": "VADER Sentiment",
+    "Diff_Word_Ratio": "Difficult Word Ratio",
+    "Word_Count": "Word Count",
+    "confidence": "FinBERT Voting Confidence",
+}
 
 def main():
-    print("=" * 60)
-    print("SHAP Analysis — FinBERT Token Explanations (v5)")
-    print("=" * 60)
+    print("Starting SHAP Explainability Analysis...")
 
-    device = torch.device("cpu")
-
-    tok_path  = os.path.join(MODEL_PATH, "vocab.txt")
-    tokenizer = (
-        BertTokenizer.from_pretrained(MODEL_PATH)
-        if os.path.exists(tok_path)
-        else BertTokenizer.from_pretrained("ProsusAI/finbert")
-    )
-
+    # Load artifacts
     try:
-        model = BertForSequenceClassification.from_pretrained(MODEL_PATH)
-        model.to(device)
-        model.eval()
-        print("Model loaded.\n")
-    except Exception as e:
-        print(f"[ERROR] {e}")
+        with open(os.path.join(MODELS_DIR, "hybrid_rf_model.pkl"), "rb") as f:
+            model = pickle.load(f)
+        with open(os.path.join(MODELS_DIR, "hybrid_scaler.pkl"), "rb") as f:
+            scaler = pickle.load(f)
+        with open(os.path.join(MODELS_DIR, "hybrid_feature_cols.pkl"), "rb") as f:
+            feature_cols = pickle.load(f)
+    except FileNotFoundError as e:
+        print(f"Error loading model artifacts: {e}")
         return
 
-    def predict_pipe(texts):
-        if isinstance(texts, np.ndarray):
-            texts = texts.tolist()
-        inputs = tokenizer(
-            [str(t) for t in texts],
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512,
-        ).to(device)
-        with torch.no_grad():
-            logits = model(**inputs).logits
-        return torch.softmax(logits, dim=1).detach().numpy()
+    # Build the test set for analysis
+    df = pd.read_parquet(os.path.join(DATA_DIR, "final_feature_dataset.parquet"))
+    df = df[df[TARGET_COL] != 0].copy()
+    df["binary_label"] = df[TARGET_COL].map({-1: 0, 1: 1})
+    df["filing_date"] = pd.to_datetime(df["filing_date"])
 
-    df      = pd.read_csv(CSV_PATH)
-    down_df = df[df[TARGET_COL] == 0]
-    samples = (
-        down_df.sample(SAMPLE_SIZE, random_state=42)
-        if len(down_df) >= SAMPLE_SIZE else down_df
+    base_cols = [c for c in feature_cols if c != "confidence"]
+    df = df.dropna(subset=["binary_label"] + base_cols)
+
+    # Use 2023+ data for testing
+    test_df = df[df["filing_date"] >= "2023-01-01"].copy()
+    agg_dict = {col: "mean" for col in base_cols}
+    agg_dict["binary_label"] = "first"
+    test_agg = test_df.groupby(["ticker", "filing_date"]).agg(agg_dict).reset_index()
+
+    # Integrate FinBERT confidence scores
+    if "confidence" in feature_cols:
+        voting_path = os.path.join(METRICS_DIR, "voting_ensemble_predictions.csv")
+        if os.path.exists(voting_path):
+            voting = pd.read_csv(voting_path)
+            voting["filing_date"] = pd.to_datetime(voting["filing_date"])
+            test_agg = test_agg.merge(
+                voting[["ticker", "filing_date", "confidence"]],
+                on=["ticker", "filing_date"], how="left"
+            )
+            test_agg["confidence"] = test_agg["confidence"].fillna(0.5)
+
+    X_test = test_agg[feature_cols].fillna(0)
+    X_test_s = scaler.transform(X_test)
+
+    # Prepare DataFrame with readable feature names
+    readable_names = [FEATURE_LABELS.get(f, f) for f in feature_cols]
+    X_named = pd.DataFrame(X_test_s, columns=readable_names)
+
+    # Calculate SHAP values
+    print("Computing SHAP values (TreeExplainer)...")
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_named)
+
+    # Handle binary output structure
+    sv = shap_values[1] if isinstance(shap_values, list) else shap_values
+
+    # Plot 1: Beeswarm Summary
+    plt.figure(figsize=(10, 7))
+    shap.summary_plot(sv, X_named, plot_type="dot", show=False, max_display=len(readable_names))
+    plt.title("SHAP Feature Impact: Predicting Price Direction", fontsize=12, pad=15)
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULTS_DIR, "shap_beeswarm.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+
+    # Plot 2: Average Importance Bar Chart
+    mean_shap = np.abs(sv).mean(axis=0)
+    shap_df = pd.DataFrame({
+        "Feature": readable_names,
+        "Mean_SHAP": mean_shap,
+    }).sort_values("Mean_SHAP", ascending=True)
+
+    bar_colors = ["#FF9800" if "FinBERT" in f else "#2196F3" for f in shap_df["Feature"]]
+
+    plt.figure(figsize=(10, 6))
+    plt.barh(shap_df["Feature"], shap_df["Mean_SHAP"], color=bar_colors)
+    plt.xlabel("Mean |SHAP Value| (Impact Strength)")
+    plt.title("Feature Importance Ranking (Hybrid Model)", fontsize=12)
+
+    legend_elements = [
+        Patch(color="#FF9800", label="FinBERT Models"),
+        Patch(color="#2196F3", label="Technical/NLP Metrics")
+    ]
+    plt.legend(handles=legend_elements, loc="lower right")
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULTS_DIR, "shap_bar.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+
+    # Export values for documentation
+    pd.DataFrame(sv, columns=readable_names).to_csv(
+        os.path.join(RESULTS_DIR, "shap_values.csv"), index=False
     )
 
-    print(f"Extracting text from {len(samples)} downside filings...\n")
-    text_data, meta = [], []
-    for _, row in samples.iterrows():
-        snippet = extract_section(row['filename'])
-        if len(snippet.split()) >= 30:
-            text_data.append(snippet)
-            meta.append(row['filename'])
-        else:
-            print(f"  [DROP] {row['filename']}\n")
+    # Ranking Printout
+    shap_ranked = pd.DataFrame({
+        "Feature": readable_names,
+        "Mean_SHAP": mean_shap,
+    }).sort_values("Mean_SHAP", ascending=False)
 
-    if not text_data:
-        print("[ERROR] No usable text extracted.")
-        return
-
-    print("\n── Snippet previews (first 400 chars) ──────────────────────────")
-    for fname, t in zip(meta, text_data):
-        sig_count = len(FINANCIAL_SIGNALS.findall(t))
-        print(f"FILE: {fname}  [{sig_count} financial signals]")
-        print(f"      {t[:400]}\n")
-
-    print(f"Running SHAP on {len(text_data)} documents (~2 min each on CPU)...")
-    masker      = shap.maskers.Text(tokenizer)
-    explainer   = shap.Explainer(predict_pipe, masker)
-    shap_values = explainer(text_data)
-
-    html_path = os.path.join(RESULTS_DIR, "shap_explanation.html")
-    with open(html_path, "w", encoding='utf-8') as f:
-        f.write(shap.plots.text(shap_values[0], display=False))
-    print(f"\nToken HTML  → {html_path}")
-
-    bar_path = os.path.join(RESULTS_DIR, "shap_bar_summary.png")
-    plt.figure(figsize=(10, 6))
-    shap.plots.bar(shap_values.mean(0), max_display=15, show=False)
-    plt.tight_layout()
-    plt.savefig(bar_path, bbox_inches='tight', dpi=150)
-    plt.close()
-    print(f"Bar summary → {bar_path}")
-    print("\nDone.")
-
+    print("\nFeature Ranking by SHAP Influence:")
+    print(shap_ranked.to_string(index=False))
+    print(f"\nAnalysis complete. Results saved to: {RESULTS_DIR}")
 
 if __name__ == "__main__":
     main()
