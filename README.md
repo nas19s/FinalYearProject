@@ -1,94 +1,376 @@
-# Predicting Short-to-Medium Term Stock Drift using FinBERT & Hybrid Ensembles
+# StockDrift 
+### Predicting Stock Price Direction from SEC Regulatory Filings using FinBERT
 
-## Project Overview
-
-This final year project builds a machine learning pipeline to predict medium-term stock price drift (UP/DOWN classification) by combining advanced Natural Language Processing (NLP) with traditional technical analysis.
-
-The core innovation is a **Hybrid Ensemble strategy**: 
-1.  **Fine-tuning FinBERT** (a financial Transformer) on SEC filings to extract linguistic sentiment signals.
-2.  **Fusing these signals** with **Textual Complexity metrics** (Gunning Fog Index) and **Market Momentum indicators** (RSI, MACD, Volume) to create a robust risk-management model.
-
-### 1. Project Scope 
-
-* **Universe:** Top 50 companies of the S&P 500 (historical & current).
-* **Data Source:** SEC EDGAR (10-K, 10-Q) and Yahoo Finance price data.
-* **Target Variable:** 1-Month Forward Returns (Classified as UP/DOWN based on median drift).
-* **Methodology:** Comparative analysis between a Baseline (Logistic Regression + VADER), a Pure NLP Model (Fine-tuned FinBERT), and a Hybrid Ensemble (FinBERT + Technicals).
+> **Final Year Computer Science Project**
+> University of Birmingham | 2025–2026
 
 ---
 
-## 2. Technical Approach & Progress
+## Research Question
 
-The project follows a structured 4-phase development plan.
+> *Can the textual content of SEC 10-K and 10-Q regulatory filings predict the direction of stock price movement in the weeks following their release?*
 
-| Phase | Goal | Key Deliverables | Status |
-| :--- | :--- | :--- | :--- |
-| **Phase 1: Foundations** | Build scraper, "Nuclear" HTML cleaning, and baseline. | • Cleaned SEC Dataset<br>• Baseline Model (54.8% Accuracy) |  **Complete** |
-| **Phase 2: NLP Core** | Fine-tune FinBERT on weighted SEC labels. | • **Fine-Tuned FinBERT**<br>• Macro F1: 0.597 |  **Complete** |
-| **Phase 3: Synthesis** | Boost performance via Hybrid Ensemble and SHAP analysis. | • **Hybrid RF Model**<br>• SHAP Token Attribution Dashboard | **Complete** |
-| **Phase 4: Deployment** | Interactive visualization and strategic backtesting. | • **StockDrift Streamlit App**<br>• Event-Driven Backtest (Sharpe 0.84) |  **In Progress** |
+This project tests the semi-strong form of the **Efficient Market Hypothesis** (Fama, 1970). If filing text carries predictive signal, markets are not instantaneously pricing all public information — consistent with Hong & Stein's (1999) gradual information diffusion hypothesis.
+
+**Core finding:** T+5 prediction is near-random (AUC ≈ 0.499), T+20 is statistically significant (AUC = 0.523, p < 0.001) — consistent with complex regulatory language taking approximately one month to be fully priced in.
 
 ---
 
-## 3. Key Findings & Performance Benchmarks
+## Key Results
 
-### Model Comparison (Validation Set)
-| Metric | Baseline (LogReg + VADER) | FinBERT (Fine-Tuned) |
-| :--- | :--- | :--- |
-| **Accuracy** | 54.8% | **62.4%** |
-| **Macro F1** | 0.513 | **0.597** |
-| **Down Recall** | 39.4% | **51.5%** |
+### Model Performance (test set 2023–2025, 430 filings)
 
-### Hybrid Feature Importance (Random Forest)
-When fusing NLP with Technicals, the model prioritizes:
-1. **Gunning Fog Index** (Weight: 0.26): Textual complexity is a primary predictor of risk.
-2. **Volume Change** (Weight: 0.21): Pre-filing liquidity signals.
-3. **RSI** (Weight: 0.17): Momentum confirmation.
-4. **FinBERT Score** (Weight: 0.14): Linguistic sentiment probability.
+| Model | Accuracy | F1 Macro | AUC |
+|---|---|---|---|
+| Majority Class (baseline — always UP) | 61.1% | 0.380 | — |
+| Logistic Regression (baseline) | 47.4% | 0.474 | 0.528 |
+| FinBERT T+5 (1 week horizon) | 49.0% | 0.475 | 0.498 |
+| FinBERT T+10 (2 week horizon) | 50.5% | 0.499 | 0.515 |
+| **FinBERT T+20 (1 month horizon)** | **52.3%** | **0.520** | **0.523** |
+| **Filing-Level Accuracy (T+20)** | **60.9%** | — | — |
+| Section-Weighted Voting Ensemble | 56.1% | 0.509 | 0.536 |
 
-### Strategic Backtest (Sharpe 0.84)
-Using a "Skip Top 25% Risk" strategy (avoiding filings predicted AS 'Down' by the model):
-* **Mean Return:** 3.08% per trade.
-* **Win Rate:** 66.7%.
-* **Sharpe Ratio:** **0.841** (vs 0.626 for 'Buy All').
-* **Total Return:** **349.9%** over the test horizon.
+**UP win rate: 63.1% — statistically significant (p < 0.001, binomial test)**
+
+### Backtest Results (2023–2025, £10,000 initial capital, 0.1% transaction cost)
+
+| Strategy | Trades | Win Rate | Total Return | Sortino | Max Drawdown |
+|---|---|---|---|---|---|
+| A: All UP signals | 309 | 63.1% | +44.2% | 2.03 | −5.2% |
+| B: Confidence ≥ 0.72 | 124 | 67.7% | +51.9% | 4.30 | −5.3% |
+| C: Financials + Tech sectors only | 89 | 71.9% | +43.1% | 4.30 | −3.7% |
+| D: 2× Leveraged B | 124 | 65.3% | +71.5% | 4.51 | −7.0% |
+| **SPY Buy-and-Hold (benchmark)** | — | — | +82.7% | ~1.2 | −18.8% |
+
+Strategies underperform SPY in absolute return — consistent with semi-strong EMH. Strategy B/C Sortino ratios of 4.30 vs SPY ~1.2 demonstrate 3.6× superior risk-adjusted performance with max drawdowns under −5.3% vs SPY's −18.8%.
+
+### Advanced Analysis
+
+| Analysis | Finding |
+|---|---|
+| CAAR Event Study | +11.81% spread between UP and DOWN labelled filings by day +20 |
+| Calibration (ECE) | 0.049 — well calibrated |
+| Optimal confidence threshold | 0.72 (accuracy 66.9%, n=124 filings) |
+| Ablation — NLP only vs technical only | 54.9% vs 53.0% — text adds genuine signal |
+| Best sector | Financials 73.6% |
+| Worst sector | Utilities 40.0% |
+| Worst quarter | 2024Q1 37.5% (Federal Reserve rate uncertainty) |
+| Binomial test p-value | p = 0.000032 |
+| Overall accuracy test p-value | p = 0.0069 |
 
 ---
 
-## 4. Error Analysis & Limitations
+## Pipeline Architecture
 
-A rigorous audit of the model's 37.6% error rate revealed specific failure patterns:
-* **Overconfidently Bullish Bias:** 9 out of 10 of the most confident errors were False Positives (predicted "Up" during a crash).
-* **Complexity Trap:** Errors involve significantly more complex text (**Avg Gunning Fog: 39** vs 28 overall).
-* **Technical Ambiguity:** The model struggles when **RSI is near neutral (40-60)**, lacking a strong technical anchor for the sentiment.
-
----
-
-## 5. Interactive Dashboard (StockDrift App)
-
-The project includes a production-ready Streamlit application for real-time inference and analysis.
-
-**Features:**
-*   Live Inspector: Paste raw SEC text to see real-time FinBERT predictions.
-*   SHAP Attribution: Interactive visualization of exactly which words (e.g., "bottlenecks", "uncertainty") drove the model's decision.
-*   Backtest Viewer: Comparative equity curves for Long-Only and Long-Short strategies.
-*   Patterns: Real-time error cluster analysis and feature distributions.
-
-**To run the app:**
-```bash
-python 05_App/app.py
+```
+SEC EDGAR API
+      │
+      ├── 02_get_sec_data.py          10-K annual filings
+      └── 02b_get_sec_data_10q.py     10-Q quarterly filings
+                    │
+                    ▼  1,823 filings — 50 tickers — 2016–2025
+                    │
+         01_shrink_sec_data.py        HTML cleaning, 4-section extraction
+                                      512-token chunking, 50-token overlap
+                    │
+                    ▼  sec_cleaned.parquet — 105,322 chunks
+                    │
+         03_create_target.py          Volatility-scaled binary labels
+                                      T+5 / T+10 / T+20 horizons
+                    │
+                    ▼  labeled_dataset.parquet — 101,325 rows
+                    │
+        ┌───────────┴────────────────────────────────┐
+        │                                            │
+04_feature_engineering.py               07_finbert_prep.py
+RSI, MACD, Volume, Fog,                 Tokenise chunks per horizon
+Flesch, VADER, Word Count                        │
+        │                               08_train_finbert.py
+05_baseline_model.py                    Fine-tune FinBERT
+Majority class + LR baselines           Layers 0–9 frozen
+        │                                        │
+        │                               09b_finbert_inference.py
+        │                               Full test inference
+        └──────────────────┬─────────────────────┘
+                           │
+                  10_hybrid_ensemble.py
+                  Section-Weighted Voting
+                           │
+           ┌───────────────┼───────────────┐
+           │               │               │
+  11_shap_analysis   12_backtest    13_error_analysis
+           │               │               │
+           └───────────────┴───────────────┘
+                           │
+               14_advanced_analysis.py
+               CAAR, Calibration, ROC,
+               Ablation, Significance Tests
+                           │
+                       app.py
+                  Streamlit Dashboard
 ```
 
 ---
 
-## 6. Setup & Usage
+## Dataset
 
-**Prerequisites:**
-* Python 3.10+
-* Conda Environment: `stockdrift`
+| Property | Value |
+|---|---|
+| Source | SEC EDGAR via `edgartools` Python library |
+| Companies | 50 S&P 500 companies across 8 sectors |
+| Period | 2016–2025 |
+| Total filings | 1,823 (475 × 10-K annual, 1,348 × 10-Q quarterly) |
+| Total text chunks | 105,322 |
+| Test-set filings | 430 (2023–2025) |
+| Price data | Yahoo Finance via `yfinance` |
 
-**Installation:**
+### Sections Extracted Per Filing
+
+| Section | Weight | Rationale |
+|---|---|---|
+| Item 1A — Risk Factors | 1.0 | Most forward-looking; legally required material risk disclosure |
+| Item 7 — MD&A | 1.0 | Management's interpretation of results; most studied in literature |
+| Item 9A — Internal Controls | 0.8 | Governance quality signal |
+| Item 7A — Quantitative Market Risk | 0.6 | Quantitative disclosures; less narrative signal |
+
+### Label Generation
+
+- **Anchor date:** `filing_date` (SEC receipt date, not `period_of_report` — avoids lookahead bias)
+- **After-hours rule:** Filings released ≥ 16:00 ET → next trading day open as entry price
+- **Method:** Volatility-scaled binary labels using 60-day rolling standard deviation
+  - UP (+1) if T+N return > +1σ
+  - DOWN (−1) if T+N return < −1σ
+  - FLAT (0) dropped — binary classification only
+- **Class distribution (T+20):** ~62% UP, ~38% DOWN
+- **Class imbalance handling:** Inverse class weighting in CrossEntropyLoss
+
+### Train / Validation / Test Split
+
+| Split | Period | Size |
+|---|---|---|
+| Train | Before 2021 | ~4,000 stratified chunks per horizon |
+| Validation | 2021–2022 | Used for early stopping |
+| Test | 2023–2025 | 430 filing-level predictions |
+
+> Time-based splits only — random splits would allow future filings into training, creating data leakage.
+
+---
+
+## Model
+
+### FinBERT Fine-tuning
+
+**Base model:** `ProsusAI/finbert` — BERT pre-trained on financial news, earnings calls, and analyst reports (Yang et al., 2020). Outperforms general BERT on financial NLP tasks by up to 15 F1 points.
+
+**Modifications:**
+- Original 3-class sentiment head (positive/negative/neutral) replaced with binary UP/DOWN head
+- Layer-wise freezing: layers 0–9 frozen (87% of 110M parameters); layers 10–11 + classifier trained (~14M parameters)
+- Prevents catastrophic forgetting of FinBERT's financial domain knowledge (Howard & Ruder, 2018)
+
+**Training configuration:**
+
+| Parameter | Value |
+|---|---|
+| Optimiser | AdamW with linear LR warmup |
+| Epochs | 3 (early stopping patience=2 on val F1) |
+| Batch size | 16 |
+| Training samples | ~4,000 per horizon (stratified) |
+| Hardware | CPU only — Apple M2 MPS causes OOM at 8GB |
+| Threads | `torch.set_num_threads(8)` |
+| Models trained | 3 (T+5, T+10, T+20) |
+
+### Section-Weighted Voting Ensemble
+
+One filing produces 50–200 chunks. Each chunk casts a hard vote (UP if `prob_up ≥ 0.5`, else DOWN), weighted by section importance:
+
+```
+Filing prediction = argmax(Σ weighted_UP_votes, Σ weighted_DOWN_votes)
+Filing confidence = Σ weighted_UP / (Σ weighted_UP + Σ weighted_DOWN)
+```
+
+Hard voting is used instead of soft probability averaging because FinBERT fine-tuned on small samples exhibits **probability collapse** — probabilities cluster near 0.5 regardless of true label, making averaged scores meaningless.
+
+---
+
+## Evaluation Framework
+
+| Method | Purpose |
+|---|---|
+| AUC-ROC | Threshold-independent discriminative power |
+| F1 Macro | Performance across both classes equally |
+| Win Rate | Accuracy on UP-labelled signals (long-only strategies) |
+| Binomial test | Whether win rate exceeds 50% by chance |
+| McNemar test | Whether ensemble outperforms majority on specific instances |
+| CAAR Event Study | Cumulative abnormal return validation (MacKinlay, 1997) |
+| Sortino Ratio | Return per unit of downside deviation (annualised) |
+| Max Drawdown | Worst peak-to-trough capital loss |
+| Ablation Study | NLP vs technical vs readability feature contribution |
+| Calibration (ECE) | Reliability of confidence scores |
+
+---
+
+## Streamlit Dashboard
+
+Launch with:
+
 ```bash
+streamlit run app.py
+```
+
+| Page | Contents |
+|---|---|
+| Overview | Research question, pipeline summary, headline metrics |
+| Data & EDA | Filing timeline, chunk lengths, section coverage, label distributions |
+| Model Results | Master results table, confusion matrices |
+| SHAP Explainability | Feature importance bar chart and beeswarm plot |
+| Backtest | Equity curves, monthly returns, per-ticker performance |
+| Error Analysis | Failure patterns by sector, quarter, and ticker |
+| Advanced Analysis | Calibration, CAAR, ROC curves, ablation, significance tests |
+
+---
+
+## Reproduction
+
+### 1. Environment Setup
+
+```bash
+conda create -n stockdrift python=3.10
 conda activate stockdrift
-pip install -r requirements.txt
+
+pip install edgartools transformers torch pandas numpy scikit-learn
+pip install ta textstat vaderSentiment tqdm pyarrow
+pip install xgboost==2.1.3        # must be 2.1.3 — SHAP breaks on 3.x
+pip install shap statsmodels streamlit pillow seaborn yfinance
+brew install libomp               # macOS only — required for XGBoost
 ```
+
+### 2. Run Full Pipeline
+
+All scripts run from the project root with `conda activate stockdrift`:
+
+```bash
+# Data collection
+python 02_Code/preprocessing/02_get_sec_data.py
+python 02_Code/preprocessing/02b_get_sec_data_10q.py
+
+# Preprocessing and labels
+python 02_Code/preprocessing/01_shrink_sec_data.py
+python 02_Code/preprocessing/03_create_target.py
+python 02_Code/feature_engineering/04_feature_engineering.py
+
+# Baselines
+python 02_Code/models/05_baseline_model.py
+
+# FinBERT — tokenise
+python 02_Code/preprocessing/07_finbert_prep.py --horizon T5
+python 02_Code/preprocessing/07_finbert_prep.py --horizon T10
+python 02_Code/preprocessing/07_finbert_prep.py --horizon T20
+
+# FinBERT — train (~3 hours each)
+python 02_Code/models/08_train_finbert.py --horizon T5
+python 02_Code/models/08_train_finbert.py --horizon T10
+python 02_Code/models/08_train_finbert.py --horizon T20
+
+# Evaluation and ensemble
+python 02_Code/evaluation/09_evaluate_models.py
+python 02_Code/models/09b_finbert_inference.py
+python 02_Code/models/10_hybrid_ensemble.py
+
+# Analysis
+python 02_Code/shap_analysis/11_shap_analysis.py
+python 02_Code/evaluation/12_strategic_backtest.py
+python 02_Code/models/13_error_analysis.py
+python 02_Code/evaluation/14_advanced_analysis.py
+python 02_Code/evaluation/06_eda_analysis.py
+
+# Launch dashboard
+streamlit run app.py
+```
+
+### 3. Hardware Notes
+
+| Spec | Value |
+|---|---|
+| Tested on | Apple M2, 8GB RAM, macOS |
+| RAM minimum | 8GB (16GB recommended for full-dataset inference) |
+| GPU | Not required — MPS causes OOM on 8GB M2, CPU used |
+| Training time | ~3 Hours per FinBERT model on M2 CPU |
+| Storage | ~6GB (filings + prices + model checkpoints) |
+
+---
+
+## File Structure
+
+```
+FinalYearProject/
+│
+├── app.py                              # Streamlit dashboard (7 pages)
+├── README.md                           # This file
+│
+├── 01_Data/
+│   ├── sec_metadata.csv                # 1,823 filing records
+│   ├── sec_sections/                   # Raw extracted section JSON files
+│   ├── sec_cleaned.parquet             # 105,322 cleaned + chunked texts
+│   ├── labeled_dataset.parquet         # Chunks with T+5/T+10/T+20 labels
+│   ├── train.parquet                   # Training split (< 2021)
+│   ├── val.parquet                     # Validation split (2021–2022)
+│   ├── test.parquet                    # Test split (>= 2023)
+│   ├── final_feature_dataset.parquet   # Chunks + all engineered features
+│   └── prices/                         # {TICKER}_prices.csv + SPY_prices.csv
+│
+├── 02_Code/
+│   ├── preprocessing/                  # Scripts 01, 02, 02b, 03, 07
+│   ├── feature_engineering/            # Script 04
+│   ├── models/                         # Scripts 05, 08, 09b, 10, 13
+│   ├── evaluation/                     # Scripts 06, 09, 12, 14
+│   └── shap_analysis/                  # Script 11
+│
+├── 03_Models/
+│   ├── finbert_champion_T5/            # Saved FinBERT T+5 checkpoint
+│   ├── finbert_champion_T10/           # Saved FinBERT T+10 checkpoint
+│   ├── finbert_champion_T20/           # Saved FinBERT T+20 checkpoint
+│   └── hybrid_ensemble/                # XGBoost model + scaler + feature list
+│
+└── 04_Results/
+    ├── baseline/                       # Confusion matrices, LR feature importance
+    ├── metrics/                        # master_results_table_final.csv, prediction CSVs
+    ├── shap/                           # shap_beeswarm.png, shap_bar.png
+    ├── backtest/                       # Equity curves, backtest_trades.csv, summary
+    ├── eda/                            # fig1–fig6 EDA plots
+    ├── error_analysis/                 # Failure breakdown plots + CSVs by sector/quarter
+    └── advanced/                       # A–I analysis plots + significance_tests.txt
+```
+
+---
+
+## Known Limitations
+
+| Limitation | Impact | Mitigation |
+|---|---|---|
+| FinBERT trained on ~4,000 chunks | Probabilities cluster near 0.5 | Hard voting is robust to probability collapse |
+| ~47 10-K filings with empty MD&A | Non-standard HTML not parsed (CVX, BRK-B, AVGO) | Falls back to available sections |
+| No macroeconomic features | Cannot predict macro shocks (rate hikes, COVID) | Worst quarter 2024Q1 acknowledged in report |
+| Class imbalance (~62% UP) | Bull-market bias in predictions | Inverse class weighting in loss function |
+| McNemar test p = 0.10 | Ensemble not significantly better pairwise vs majority | Binomial and t-tests p < 0.001 on win rate |
+| XGBoost hybrid: FinBERT SHAP = 0.000 | FinBERT not inferred on training data | Ablation study provides clean evidence of NLP contribution |
+| 50-company universe | Hardware constraint | 430 test filings sufficient for all significance tests |
+
+---
+
+## References
+
+| Paper | Citation |
+|---|---|
+| Fama (1970) | Efficient capital markets: A review of theory and empirical work. *Journal of Finance* |
+| Hong & Stein (1999) | A unified theory of underreaction, momentum trading, and overreaction. *Journal of Finance* |
+| Li (2008) | Annual report readability, current earnings, and earnings persistence. *Journal of Accounting and Economics* |
+| Loughran & McDonald (2011) | When is a liability not a liability? Textual analysis, dictionaries, and 10-Ks. *Journal of Finance* |
+| Devlin et al. (2018) | BERT: Pre-training of deep bidirectional transformers. *NAACL 2019* |
+| Yang et al. (2020) | FinBERT: A pretrained language model for financial communications. *arXiv:2006.08097* |
+| Howard & Ruder (2018) | Universal language model fine-tuning for text classification. *ACL 2018* |
+| MacKinlay (1997) | Event studies in economics and finance. *Journal of Economic Literature* |
+| Lundberg & Lee (2017) | A unified approach to interpreting model predictions. *NeurIPS 2017* |
+
+---
+
+*Python 3.10 · conda env: `stockdrift`*
