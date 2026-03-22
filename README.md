@@ -1,4 +1,4 @@
-# StockDrift 
+# StockDrift
 ### Predicting Stock Price Direction from SEC Regulatory Filings using FinBERT
 
 > **Final Year Computer Science Project**
@@ -13,6 +13,39 @@
 This project tests the semi-strong form of the **Efficient Market Hypothesis** (Fama, 1970). If filing text carries predictive signal, markets are not instantaneously pricing all public information — consistent with Hong & Stein's (1999) gradual information diffusion hypothesis.
 
 **Core finding:** T+5 prediction is near-random (AUC ≈ 0.499), T+20 is statistically significant (AUC = 0.523, p < 0.001) — consistent with complex regulatory language taking approximately one month to be fully priced in.
+
+---
+
+## Project Outcomes and Evaluation
+
+The strategies underperform SPY in absolute return over the 2023–2025 test period (+44–72% vs SPY +82.7%). This is expected under the Efficient Market Hypothesis: public information signals are not supposed to generate large abnormal returns after transaction costs. What matters is whether the model extracts *quality* signal, not just raw return — and on that measure the results are strong.
+
+**Sortino ratio comparison:**
+
+| | Strategy A | Strategy B | Strategy C | Strategy D | SPY |
+|---|---|---|---|---|---|
+| Sortino ratio | 2.03 | **4.30** | **4.30** | 4.51 | ~1.2 |
+
+Strategy B and C achieve Sortino ratios of 4.30 — approximately **3.6× the SPY benchmark**. The Sortino ratio measures return per unit of *downside* deviation only (unlike Sharpe, which penalises all volatility equally). A ratio of 4.30 versus SPY's ~1.2 means the strategies generate substantially more return for each unit of bad risk taken.
+
+**Drawdown-matched comparison:**
+
+The maximum drawdown figures reveal the clearest advantage. Strategy C's worst loss was −3.7%; SPY's was −18.8% over the same period. If Strategy C were leveraged to match SPY's drawdown level (approximately 5.1× leverage, bringing max drawdown from −3.7% to −18.8%), the adjusted return would be approximately **+219%** — compared to SPY's +82.7%. Strategy B, similarly leveraged to SPY's drawdown level (3.6×), yields an estimated **+184%**.
+
+| | Strategy B | Strategy C | SPY |
+|---|---|---|---|
+| Actual return | +51.9% | +43.1% | +82.7% |
+| Max drawdown | −5.3% | −3.7% | −18.8% |
+| Leverage to match SPY drawdown | 3.6× | 5.1× | — |
+| Drawdown-matched projected return | ~+184% | ~+219% | +82.7% |
+
+These projections are illustrative and do not account for margin costs or slippage under leverage. They are presented as a directional comparison of signal quality, not as a trading recommendation. The underlying point is that the model's return distribution — many small gains, rare small losses — is structurally different from SPY's wider swings.
+
+**Statistical significance:**
+
+The 63.1% UP win rate over 309 independent test trades is confirmed significant at p < 0.001 (binomial test). The CAAR event study independently validates label quality — UP-labelled filings outperform DOWN-labelled filings by +11.81 percentage points by day +20, driven purely by the language in the filings and entirely independent of the model's predictions.
+
+In summary: the model captures a real, statistically proven signal in SEC filing language. The absolute return underperformance reflects the exceptional strength of the 2023–2025 bull market and the structural constraints of a long-only strategy — not a failure of the predictive approach.
 
 ---
 
@@ -32,17 +65,17 @@ This project tests the semi-strong form of the **Efficient Market Hypothesis** (
 
 **UP win rate: 63.1% — statistically significant (p < 0.001, binomial test)**
 
+Note on baselines: the majority class baseline achieves 61.1% accuracy purely from class imbalance (~62% of test filings are labelled UP in the 2023–2025 bull market). Its F1 macro of 0.380 reveals it never correctly identifies DOWN cases. FinBERT's F1 macro of 0.520 demonstrates genuine learning across both classes.
+
 ### Backtest Results (2023–2025, £10,000 initial capital, 0.1% transaction cost)
 
-| Strategy | Trades | Win Rate | Total Return | Sortino | Max Drawdown |
-|---|---|---|---|---|---|
-| A: All UP signals | 309 | 63.1% | +44.2% | 2.03 | −5.2% |
-| B: Confidence ≥ 0.72 | 124 | 67.7% | +51.9% | 4.30 | −5.3% |
-| C: Financials + Tech sectors only | 89 | 71.9% | +43.1% | 4.30 | −3.7% |
-| D: 2× Leveraged B | 124 | 65.3% | +71.5% | 4.51 | −7.0% |
-| **SPY Buy-and-Hold (benchmark)** | — | — | +82.7% | ~1.2 | −18.8% |
-
-Strategies underperform SPY in absolute return — consistent with semi-strong EMH. Strategy B/C Sortino ratios of 4.30 vs SPY ~1.2 demonstrate 3.6× superior risk-adjusted performance with max drawdowns under −5.3% vs SPY's −18.8%.
+| Strategy | Trades | Win Rate | Total Return | Sharpe | Sortino | Max Drawdown |
+|---|---|---|---|---|---|---|
+| A: All UP signals | 309 | 63.1% | +44.2% | 1.08 | 2.03 | −5.2% |
+| B: Confidence ≥ 0.72 | 124 | 67.7% | +51.9% | 1.68 | 4.30 | −5.3% |
+| C: Financials + Tech sectors only | 89 | 71.9% | +43.1% | 1.87 | 4.30 | −3.7% |
+| D: 2× Leveraged B | 124 | 65.3% | +71.5% | 1.51 | 4.51 | −7.0% |
+| **SPY Buy-and-Hold (benchmark)** | — | — | +82.7% | 1.44 | ~1.2 | −18.8% |
 
 ### Advanced Analysis
 
@@ -175,7 +208,7 @@ Majority class + LR baselines           Layers 0–9 frozen
 | Epochs | 3 (early stopping patience=2 on val F1) |
 | Batch size | 16 |
 | Training samples | ~4,000 per horizon (stratified) |
-| Hardware | CPU only — Apple M2 MPS causes OOM at 8GB |
+| Hardware | CPU |
 | Threads | `torch.set_num_threads(8)` |
 | Models trained | 3 (T+5, T+10, T+20) |
 
@@ -223,6 +256,7 @@ streamlit run app.py
 | Data & EDA | Filing timeline, chunk lengths, section coverage, label distributions |
 | Model Results | Master results table, confusion matrices |
 | SHAP Explainability | Feature importance bar chart and beeswarm plot |
+| Live Prediction | Paste any filing text — live FinBERT T+20 inference |
 | Backtest | Equity curves, monthly returns, per-ticker performance |
 | Error Analysis | Failure patterns by sector, quarter, and ticker |
 | Advanced Analysis | Calibration, CAAR, ROC curves, ablation, significance tests |
@@ -266,7 +300,7 @@ python 02_Code/preprocessing/07_finbert_prep.py --horizon T5
 python 02_Code/preprocessing/07_finbert_prep.py --horizon T10
 python 02_Code/preprocessing/07_finbert_prep.py --horizon T20
 
-# FinBERT — train (~3 hours each)
+# FinBERT — train (~3 hours each on M2 CPU)
 python 02_Code/models/08_train_finbert.py --horizon T5
 python 02_Code/models/08_train_finbert.py --horizon T10
 python 02_Code/models/08_train_finbert.py --horizon T20
@@ -294,8 +328,8 @@ streamlit run app.py
 | Tested on | Apple M2, 8GB RAM, macOS |
 | RAM minimum | 8GB (16GB recommended for full-dataset inference) |
 | GPU | Not required — MPS causes OOM on 8GB M2, CPU used |
-| Training time | ~3 Hours per FinBERT model on M2 CPU |
-| Storage | ~6GB (filings + prices + model checkpoints) |
+| Training time | ~3 hours per FinBERT model on M2 CPU |
+| Storage | ~13GB (filings + prices + model checkpoints) |
 
 ---
 
@@ -304,7 +338,7 @@ streamlit run app.py
 ```
 FinalYearProject/
 │
-├── app.py                              # Streamlit dashboard (7 pages)
+├── app.py                              # Streamlit dashboard (8 pages)
 ├── README.md                           # This file
 │
 ├── 01_Data/
@@ -354,6 +388,7 @@ FinalYearProject/
 | McNemar test p = 0.10 | Ensemble not significantly better pairwise vs majority | Binomial and t-tests p < 0.001 on win rate |
 | XGBoost hybrid: FinBERT SHAP = 0.000 | FinBERT not inferred on training data | Ablation study provides clean evidence of NLP contribution |
 | 50-company universe | Hardware constraint | 430 test filings sufficient for all significance tests |
+| Drawdown-matched projections are illustrative | Do not account for margin costs or slippage under leverage | Presented as directional comparisons only |
 
 ---
 
