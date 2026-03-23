@@ -1,0 +1,8 @@
+Model,Accuracy,F1_Macro,AUC,F1_DOWN,F1_UP,N_test
+FinBERT (T20),0.523,0.5198,0.5229,0.4807,0.5589,4000
+FinBERT Section-Weighted Voting,0.5605,0.5092,0.5364,0.3505,0.6678,430
+FinBERT (T10),0.5048,0.4994,0.5154,0.5511,0.4477,4000
+FinBERT (T5),0.4903,0.475,0.4978,0.5644,0.3857,4000
+Logistic Regression (engineered features),0.4742,0.4739,0.5281,,,—
+XGBoost + FinBERT Voting Confidence,0.5837,0.4517,0.5605,0.1826,0.7207,430
+Majority Class (always UP),0.6117,0.3795,,,,—

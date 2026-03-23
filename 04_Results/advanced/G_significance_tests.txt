@@ -1,0 +1,8 @@
+StockDrift — Statistical Significance Summary
+==================================================
+
+Accuracy vs random: 56.0%, p=0.0069
+UP win rate vs random: 61.5%, p=0.000032
+McNemar vs majority: chi2=2.678, p=0.1018
+T-test P(UP) separation: t=2.388, p=0.0085
+AUC T5→T20: +0.0251
