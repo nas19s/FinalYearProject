@@ -310,35 +310,84 @@ elif page == "Backtest":
     st.title("Strategic Backtest")
     st.markdown("---")
     st.markdown(
-        "Four strategies simulated on 2023–2025 test set. "
-        "20-day hold, £10,000 initial capital, 0.1% transaction cost, 20% max position."
+        "Four strategies simulated on the 2023–2025 test set. "
+        "20-day hold period, £10,000 initial capital, 0.1% transaction cost, 20% max position size."
     )
+
+    st.subheader("Strategy Definitions")
+    strat_def_df = pd.DataFrame({
+        "Strategy": [
+            "A — All UP Signals",
+            "B — High Confidence",
+            "C — Sector Filtered",
+            "D — Leveraged (B × 2)",
+        ],
+        "Signal Filter": [
+            "All filings where model predicts UP",
+            "UP predictions with confidence ≥ 0.72",
+            "UP predictions in Financials + Technology sectors only",
+            "Same signals as Strategy B (confidence ≥ 0.72)",
+        ],
+        "Leverage":    ["1×", "1×", "1×", "2×"],
+        "Stop Loss":   ["None", "None", "None", "−8%"],
+        "Margin Cost": ["None", "None", "None", "2% annualised"],
+        "Trades":      ["309", "124", "89", "124"],
+    })
+    st.dataframe(strat_def_df, use_container_width=True, hide_index=True)
+
+    st.info(
+        "Strategy D uses the **identical trade signals as Strategy B** — "
+        "high confidence UP predictions (≥ 0.72) — but applies 2× leverage, "
+        "an −8% stop loss per trade, and a 2% annualised margin cost. "
+        "This isolates the pure effect of leverage on an otherwise identical signal set."
+    )
+
+    st.markdown("---")
+
     summary = load_csv(os.path.join(RESULTS, "backtest", "backtest_summary.csv"))
     if summary is not None:
         st.subheader("Strategy Summary")
         st.dataframe(summary, use_container_width=True)
+
     st.markdown("---")
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Strategy C — Max Drawdown", "−3.7%",  "vs SPY −18.8%")
     col2.metric("Strategy B — Sortino",      "4.30",   "vs SPY ~1.2")
     col3.metric("Strategy C — Win Rate",     "71.9%")
     col4.metric("Strategy B — Total Return", "+51.9%")
+
     st.markdown("---")
     st.subheader("Risk-Adjusted Performance")
     comparison_df = pd.DataFrame({
-        "Metric":        ["Total return","Max drawdown","Sharpe ratio","Sortino ratio","Win rate","Trades"],
-        "Strategy A":    ["+44.2%","−5.2%","1.08","2.03","63.1%","309"],
-        "Strategy B":    ["+51.9%","−5.3%","1.68","4.30","67.7%","124"],
-        "Strategy C":    ["+43.1%","−3.7%","1.87","4.30","71.9%","89"],
-        "Strategy D":    ["+71.5%","−7.0%","1.51","4.51","65.3%","124"],
-        "SPY benchmark": ["+82.7%","−18.8%","1.44","~1.2","—","—"],
+        "Metric":                        ["Total return", "Max drawdown", "Sharpe", "Sortino", "Win rate", "Trades"],
+        "A — All UP":                    ["+44.2%", "−5.2%", "1.08", "2.03", "63.1%", "309"],
+        "B — High Conf ≥0.72":           ["+51.9%", "−5.3%", "1.68", "4.30", "67.7%", "124"],
+        "C — Fin+Tech Only":             ["+43.1%", "−3.7%", "1.87", "4.30", "71.9%", "89"],
+        "D — B Signals 2× Leverage":     ["+71.5%", "−7.0%", "1.51", "4.51", "65.3%", "124"],
+        "SPY Benchmark":                 ["+82.7%", "−18.8%", "1.44", "~1.2", "—", "—"],
     })
     st.dataframe(comparison_df, use_container_width=True, hide_index=True)
-    st.info(
-        "All strategies underperform SPY in absolute return — consistent with semi-strong EMH. "
-        "Strategy B Sortino of 4.30 versus SPY ~1.2 indicates substantially more efficient use "
-        "of downside risk budget. Strategy C max drawdown −3.7% vs SPY −18.8%."
-    )
+
+    st.markdown("---")
+    obs1, obs2 = st.columns(2)
+    with obs1:
+        st.markdown("**Strategy B vs D — Leverage Effect**")
+        st.markdown(
+            "Both trade the **same signals**. Strategy D's 2× leverage lifts return "
+            "from +51.9% → +71.5% but increases drawdown from −5.3% → −7.0%. "
+            "Sortino improves (4.30 → 4.51), meaning leverage adds return more "
+            "efficiently than it adds downside risk on this signal set."
+        )
+    with obs2:
+        st.markdown("**All Strategies vs SPY**")
+        st.markdown(
+            "All strategies underperform SPY in absolute return (+82.7%) — consistent "
+            "with semi-strong EMH. However, max drawdown never exceeds −7.0% vs SPY −18.8%, "
+            "and all Sortino ratios far exceed SPY's ~1.2."
+        )
+
+    st.markdown("---")
     for fname, title in [
         ("backtest_equity_curves.png", "Equity Curves — All Strategies vs SPY"),
         ("backtest_by_ticker.png",     "Performance by Ticker"),
@@ -349,6 +398,7 @@ elif page == "Backtest":
             st.subheader(title)
             st.image(img, use_container_width=True)
             st.markdown("---")
+
     trades = load_csv(os.path.join(RESULTS, "backtest", "backtest_trades.csv"))
     if trades is not None:
         with st.expander("View All Trades"):
@@ -362,9 +412,30 @@ elif page == "Custom Backtest":
     st.markdown("---")
     st.markdown(
         "Replay the model's predictions with your own parameters. "
-        "Filter by ticker, sector, confidence, and date. Adjust leverage and starting capital."
+        "Filter by ticker, sector, and date. Adjust starting capital, "
+        "position size, and transaction cost."
     )
 
+    with st.expander("Strategy Reference"):
+        st.dataframe(pd.DataFrame({
+            "Strategy": [
+                "A — All UP Signals",
+                "B — High Confidence",
+                "C — Sector Filtered",
+                "D — Leveraged (B × 2)",
+            ],
+            "Signal Filter": [
+                "All filings where model predicts UP",
+                "UP predictions with confidence ≥ 0.72",
+                "UP predictions in Financials + Technology only",
+                "Same signals as Strategy B (confidence ≥ 0.72)",
+            ],
+            "Leverage":  ["1×", "1×", "1×", "2×"],
+            "Stop Loss": ["None", "None", "None", "−8%"],
+            "Trades":    ["309", "124", "89", "124"],
+        }), use_container_width=True, hide_index=True)
+
+    # ── Load data ─────────────────────────────────────────────────────────────
     trades_path = os.path.join(RESULTS, "backtest", "backtest_trades.csv")
     trades_raw  = load_csv(trades_path)
 
@@ -372,15 +443,18 @@ elif page == "Custom Backtest":
         st.error("backtest_trades.csv not found. Run 12_strategic_backtest.py first.")
         st.stop()
 
-    trades_raw.columns = [c.strip().lower().replace(" ","_") for c in trades_raw.columns]
+    trades_raw.columns = [c.strip().lower().replace(" ", "_") for c in trades_raw.columns]
 
+    # ── Column mapping ────────────────────────────────────────────────────────
     col_map = {}
     for needed, candidates in {
-        "ticker":     ["ticker","symbol","stock"],
-        "entry_date": ["entry_date","date","trade_date","filing_date"],
-        "ret":        ["return","ret","trade_return","pnl_pct"],
-        "confidence": ["confidence","conf","model_confidence"],
-        "strategy":   ["strategy","strat"],
+        "ticker":    ["ticker", "symbol", "stock"],
+        "entry_date":["entry_date", "date", "trade_date", "filing_date"],
+        "exit_date": ["exit_date"],
+        "ret":       ["return", "ret", "trade_return", "pnl_pct"],
+        "allocated": ["allocated", "position_size", "pos_size"],
+        "days_held": ["days_held", "days", "hold_days"],
+        "strategy":  ["strategy", "strat"],
     }.items():
         for c in candidates:
             if c in trades_raw.columns:
@@ -392,19 +466,38 @@ elif page == "Custom Backtest":
             lambda t: SECTOR_MAP.get(str(t).upper(), "Other")
         )
 
-    if "entry_date" in col_map:
-        trades_raw[col_map["entry_date"]] = pd.to_datetime(
-            trades_raw[col_map["entry_date"]], errors="coerce"
-        )
-        date_col = col_map["entry_date"]
-        min_date = trades_raw[date_col].min()
-        max_date = trades_raw[date_col].max()
-    else:
-        date_col = min_date = max_date = None
+    for dc in ["entry_date", "exit_date"]:
+        if dc in col_map and col_map[dc] in trades_raw.columns:
+            trades_raw[col_map[dc]] = pd.to_datetime(
+                trades_raw[col_map[dc]], errors="coerce"
+            )
 
+    date_col  = col_map.get("entry_date")
+    exit_col  = col_map.get("exit_date")
+    ret_col   = col_map.get("ret")
+    alloc_col = col_map.get("allocated")
+    strat_col = col_map.get("strategy")
+
+    min_date    = trades_raw[date_col].min() if date_col else None
+    max_date    = trades_raw[date_col].max() if date_col else None
     all_tickers = sorted(trades_raw[col_map["ticker"]].unique()) if "ticker" in col_map else []
     all_sectors = sorted(trades_raw["sector"].unique()) if "sector" in trades_raw.columns else []
+    all_strats  = sorted(trades_raw[strat_col].unique()) if strat_col and strat_col in trades_raw.columns else []
 
+    STRAT_DESC = {
+        "Strategy A (all UP)":        "All UP predictions — no filter (309 trades)",
+        "Strategy B (conf>=0.72)":    "High confidence ≥ 0.72 (124 trades)",
+        "Strategy C (Fin+Tech only)": "Financials + Technology sectors only (89 trades)",
+        "Strategy D (2x leveraged)":  "Strategy B signals + 2× leverage + −8% stop loss (124 trades)",
+    }
+
+    def get_desc(name):
+        for k, v in STRAT_DESC.items():
+            if k in name or name in k:
+                return v
+        return name
+
+    # ── Parameters UI ─────────────────────────────────────────────────────────
     st.subheader("Parameters")
     ctrl1, ctrl2 = st.columns(2)
 
@@ -412,7 +505,7 @@ elif page == "Custom Backtest":
         st.markdown("**Universe**")
         selection_mode = st.radio(
             "Select tickers by",
-            ["All tickers","By sector","Manual selection"],
+            ["All tickers", "By sector", "Manual selection"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -421,7 +514,7 @@ elif page == "Custom Backtest":
         elif selection_mode == "By sector":
             selected_sectors = st.multiselect(
                 "Sectors", all_sectors,
-                default=all_sectors[:2] if len(all_sectors) >= 2 else all_sectors
+                default=all_sectors[:2] if len(all_sectors) >= 2 else all_sectors,
             )
             selected_tickers = [
                 t for t in all_tickers
@@ -431,8 +524,30 @@ elif page == "Custom Backtest":
         else:
             selected_tickers = st.multiselect(
                 "Tickers", all_tickers,
-                default=all_tickers[:5] if len(all_tickers) >= 5 else all_tickers
+                default=all_tickers[:5] if len(all_tickers) >= 5 else all_tickers,
             )
+
+        if all_strats:
+            selected_strategy = st.selectbox(
+                "Strategy",
+                all_strats,
+                index=0,
+                help=(
+                    "A = all UP signals | "
+                    "B = high confidence ≥ 0.72 | "
+                    "C = Fin+Tech sectors only | "
+                    "D = Strategy B signals with 2× leverage + stop loss"
+                ),
+            )
+            st.caption(get_desc(selected_strategy))
+            if "2x" in selected_strategy.lower() or "leveraged" in selected_strategy.lower():
+                st.info(
+                    "Strategy D trades the **same signals as Strategy B** "
+                    "(confidence ≥ 0.72) with 2× leverage, −8% stop loss, "
+                    "and 2% annualised margin cost already in the returns."
+                )
+        else:
+            selected_strategy = None
 
         if min_date and max_date:
             date_range = st.date_input(
@@ -447,132 +562,170 @@ elif page == "Custom Backtest":
     with ctrl2:
         st.markdown("**Capital & Risk**")
         starting_capital = st.number_input(
-            "Starting capital (£)", min_value=1000, max_value=1_000_000, value=10_000, step=1000
+            "Starting capital (£)",
+            min_value=1000, max_value=1_000_000, value=10_000, step=1000,
         )
-        leverage = st.slider("Leverage", 1.0, 5.0, 1.0, 0.25,
-            help="1x = no leverage. Max drawdown scales with leverage.")
-        tx_cost  = st.slider("Transaction cost (%)", 0.0, 1.0, 0.1, 0.05) / 100
-        max_pos  = st.slider("Max position size (%)", 5, 50, 20, 5) / 100
+        max_pos = st.slider(
+            "Max position size (%)", 5, 50, 20, 5,
+            help="Original backtest used 20%.",
+        ) / 100
+        tx_cost = st.slider(
+            "Transaction cost (%)", 0.0, 1.0, 0.1, 0.05,
+            help="Original backtest used 0.1%.",
+        ) / 100
+        st.caption(
+            "Leverage and stop-loss are properties of Strategy D only and are "
+            "already reflected in its trade returns. Changing capital scales proportionally."
+        )
 
-        if "confidence" in col_map:
-            conf_min = float(trades_raw[col_map["confidence"]].min())
-            conf_max = float(trades_raw[col_map["confidence"]].max())
-            conf_threshold = st.slider(
-                "Min confidence threshold",
-                min_value=round(conf_min,2), max_value=round(conf_max,2),
-                value=round(conf_min,2), step=0.01
-            )
-        else:
-            conf_threshold = 0.0
+    st.markdown("---")
+    run_clicked = st.button("▶  Run Backtest", type="primary", use_container_width=True)
 
-    # ── filter ────────────────────────────────────────────────────────────────
-    df = trades_raw.copy()
-    if "ticker" in col_map and selected_tickers:
-        df = df[df[col_map["ticker"]].isin(selected_tickers)]
-    if date_col and date_range and len(date_range) == 2:
-        s, e = pd.Timestamp(date_range[0]), pd.Timestamp(date_range[1])
-        df = df[(df[date_col] >= s) & (df[date_col] <= e)]
-    if "confidence" in col_map:
-        df = df[df[col_map["confidence"]] >= conf_threshold]
-
-    if len(df) == 0:
-        st.warning("No trades match the selected filters. Try widening your selection.")
+    if not run_clicked:
+        st.info("Configure parameters above then click **Run Backtest**.")
         st.stop()
 
-    if date_col:
-        df = df.sort_values(date_col).reset_index(drop=True)
+    if not selected_strategy:
+        st.warning("No strategy available.")
+        st.stop()
 
-    ret_col = col_map.get("ret")
-    if ret_col and ret_col in df.columns:
-        df[ret_col] = pd.to_numeric(df[ret_col], errors="coerce").fillna(0)
+    # ── Apply filters ─────────────────────────────────────────────────────────
+    df = trades_raw.copy()
 
-        capital      = starting_capital
-        equity_curve = [capital]
-        dates_curve  = [df[date_col].iloc[0]] if date_col else []
+    # Filter to selected strategy first
+    if strat_col and strat_col in df.columns:
+        df = df[df[strat_col] == selected_strategy]
 
-        for _, row in df.iterrows():
-            pos   = min(capital * max_pos, capital) * leverage
-            tr    = float(row[ret_col]) * leverage - tx_cost
-            capital = max(capital + pos * tr, 0)
-            equity_curve.append(capital)
-            if date_col:
-                dates_curve.append(row[date_col])
+    if "ticker" in col_map and selected_tickers:
+        df = df[df[col_map["ticker"]].isin(selected_tickers)]
 
-        total_return = (equity_curve[-1] - starting_capital) / starting_capital * 100
-        n_trades     = len(df)
-        win_rate     = (df[ret_col] > 0).mean() * 100
+    if date_col and date_range and len(date_range) == 2:
+        s = pd.Timestamp(date_range[0])
+        e = pd.Timestamp(date_range[1])
+        df = df[(df[date_col] >= s) & (df[date_col] <= e)]
 
-        peak = starting_capital
-        max_dd = 0.0
-        for v in equity_curve:
-            peak   = max(peak, v)
-            max_dd = max(max_dd, (peak - v) / peak * 100 if peak > 0 else 0)
+    if len(df) == 0:
+        st.warning("No trades match the selected filters.")
+        st.stop()
 
-        rets = pd.Series([
-            (equity_curve[i+1] - equity_curve[i]) / equity_curve[i]
-            for i in range(len(equity_curve)-1) if equity_curve[i] > 0
-        ])
-        down = rets[rets < 0]
-        sortino = (rets.mean() / down.std() * np.sqrt(252)
-                   if len(down) > 1 and down.std() > 0 else 0.0)
-
-        st.markdown("---")
-        st.subheader("Results")
-        m1,m2,m3,m4,m5,m6 = st.columns(6)
-        m1.metric("Total Return",  f"{total_return:+.1f}%")
-        m2.metric("Final Capital", f"£{equity_curve[-1]:,.0f}")
-        m3.metric("Trades",        str(n_trades))
-        m4.metric("Win Rate",      f"{win_rate:.1f}%")
-        m5.metric("Max Drawdown",  f"−{max_dd:.1f}%")
-        m6.metric("Sortino",       f"{sortino:.2f}")
-
-        st.markdown("---")
-        st.subheader("Equity Curve")
-        if dates_curve and len(dates_curve) == len(equity_curve):
-            eq_df = pd.DataFrame({"Capital": equity_curve}, index=dates_curve)
-        else:
-            eq_df = pd.DataFrame({"Capital": equity_curve})
-        st.line_chart(eq_df, use_container_width=True)
-
-        st.subheader("Drawdown")
-        eq_s   = pd.Series(equity_curve)
-        dd_s   = (eq_s - eq_s.cummax()) / eq_s.cummax() * 100
-        dd_df  = pd.DataFrame({"Drawdown (%)": dd_s})
-        if dates_curve and len(dates_curve) == len(dd_s):
-            dd_df.index = dates_curve
-        st.area_chart(dd_df, use_container_width=True)
-
-        st.markdown("---")
-        st.subheader("Trade Log")
-        show_cols = [c for c in [
-            col_map.get("ticker"), date_col, ret_col,
-            col_map.get("confidence"), col_map.get("strategy"), "sector"
-        ] if c and c in df.columns]
-        disp = df[show_cols].copy()
-        if ret_col in disp.columns:
-            disp[ret_col] = disp[ret_col].map(lambda x: f"{x:+.2%}")
-        if col_map.get("confidence") in disp.columns:
-            disp[col_map["confidence"]] = disp[col_map["confidence"]].map(
-                lambda x: f"{x:.2f}" if pd.notna(x) else "—"
-            )
-        st.dataframe(disp, use_container_width=True, hide_index=True)
-
-        if "ticker" in col_map:
-            st.markdown("---")
-            st.subheader("Per-Ticker Summary")
-            tg = df.groupby(col_map["ticker"])[ret_col].agg(
-                Trades="count",
-                Win_Rate=lambda x: f"{(x>0).mean()*100:.0f}%",
-                Avg_Return=lambda x: f"{x.mean()*100:+.2f}%",
-                Total_Return=lambda x: f"{x.sum()*100:+.2f}%",
-            ).reset_index()
-            tg.columns = ["Ticker","Trades","Win Rate","Avg Return","Total Return"]
-            st.dataframe(tg, use_container_width=True, hide_index=True)
-    else:
-        st.warning("Could not identify a return column in backtest_trades.csv.")
+    if not ret_col or ret_col not in df.columns:
+        st.warning("Could not identify a return column.")
         st.write("Columns found:", list(trades_raw.columns))
+        st.stop()
 
+    df[ret_col]   = pd.to_numeric(df[ret_col],   errors="coerce").fillna(0)
+    if alloc_col and alloc_col in df.columns:
+        df[alloc_col] = pd.to_numeric(df[alloc_col], errors="coerce").fillna(0)
 
+    df = df.sort_values(date_col).reset_index(drop=True)
+
+    # ── Simulation ────────────────────────────────────────────────────────────
+    # Mirrors compute_equity_curve() from 12_strategic_backtest.py exactly:
+    #   capital += allocated * return   (where return is raw % not 1+ret)
+    # The allocated column stores the £ deployed per trade at £10k starting capital.
+    # We scale it proportionally to the new starting capital.
+    # Transaction cost: original returns already include 0.001 — we swap for custom tc.
+
+    original_cap = 10_000.0
+    cap_scale    = starting_capital / original_cap
+
+    eq_values = [starting_capital]
+    eq_dates  = [df[date_col].iloc[0]]
+
+    for _, row in df.iterrows():
+        ret   = float(row[ret_col])
+        alloc = float(row[alloc_col]) * cap_scale if alloc_col and alloc_col in df.columns else starting_capital * max_pos
+
+        # Swap original tx cost for custom
+        adj_ret = ret + 0.001 - tx_cost
+
+        # P&L = allocated £ × raw return %
+        pnl = alloc * adj_ret
+        eq_values.append(eq_values[-1] + pnl)
+        eq_dates.append(row[date_col])
+
+    eq_s = pd.Series(eq_values, dtype=float)
+    dt_s = pd.to_datetime(pd.Series(eq_dates, dtype=object), errors="coerce")
+
+    # ── Metrics ───────────────────────────────────────────────────────────────
+    r             = df[ret_col]
+    final_capital = float(eq_s.iloc[-1])
+    total_return  = (final_capital - starting_capital) / starting_capital * 100
+    n_trades      = len(df)
+    win_rate      = (r > 0).mean() * 100
+
+    peak   = eq_s.cummax()
+    max_dd = ((eq_s - peak) / peak * 100).min() * -1
+
+    downside = r[r < 0]
+    down_std = downside.std() if len(downside) > 1 else 1e-9
+    sortino  = r.mean() / down_std * np.sqrt(252 / 20) if down_std > 0 else 0.0
+    sharpe   = r.mean() / r.std()  * np.sqrt(252 / 20) if r.std()  > 0 else 0.0
+
+    # ── Results ───────────────────────────────────────────────────────────────
+    st.subheader(f"Results — {selected_strategy}")
+    st.caption(get_desc(selected_strategy))
+
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("Total Return",  f"{total_return:+.1f}%")
+    c2.metric("Final Capital", f"£{final_capital:,.0f}")
+    c3.metric("Trades",        str(n_trades))
+    c4.metric("Win Rate",      f"{win_rate:.1f}%")
+    c5.metric("Max Drawdown",  f"−{max_dd:.1f}%")
+    c6.metric("Sortino",       f"{sortino:.2f}")
+    c7.metric("Sharpe",        f"{sharpe:.2f}")
+
+    # ── Equity curve ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Equity Curve")
+
+    eq_df = (
+        pd.DataFrame({"Capital (£)": eq_s.values, "Date": dt_s.values})
+        .dropna(subset=["Date"])
+        .groupby("Date")["Capital (£)"]
+        .last()
+        .reset_index()
+        .sort_values("Date")
+        .set_index("Date")
+    )
+    st.line_chart(eq_df, use_container_width=True)
+
+    # ── Drawdown ──────────────────────────────────────────────────────────────
+    st.subheader("Drawdown")
+    peak_eq = eq_df["Capital (£)"].cummax()
+    dd_df   = ((eq_df["Capital (£)"] - peak_eq) / peak_eq * 100).rename("Drawdown (%)").to_frame()
+    st.area_chart(dd_df, use_container_width=True)
+
+    # ── Trade log ─────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Trade Log")
+    show_cols = [c for c in [
+        col_map.get("ticker"), date_col, exit_col, ret_col,
+        alloc_col, col_map.get("days_held"), strat_col, "sector",
+    ] if c and c in df.columns]
+    disp = df[show_cols].copy()
+    if ret_col in disp.columns:
+        disp[ret_col] = disp[ret_col].map(lambda x: f"{x:+.2%}")
+    if alloc_col and alloc_col in disp.columns:
+        disp[alloc_col] = disp[alloc_col].map(lambda x: f"£{x:,.0f}")
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    # ── Per-ticker summary ────────────────────────────────────────────────────
+    if "ticker" in col_map:
+        st.markdown("---")
+        st.subheader("Per-Ticker Summary")
+        tg = (
+            df.groupby(col_map["ticker"])[ret_col]
+            .agg(
+                Trades="count",
+                Win_Rate=lambda x: f"{(x > 0).mean() * 100:.0f}%",
+                Avg_Return=lambda x: f"{x.mean() * 100:+.2f}%",
+                Total_Return=lambda x: f"{x.sum() * 100:+.2f}%",
+            )
+            .reset_index()
+        )
+        tg.columns = ["Ticker", "Trades", "Win Rate", "Avg Return", "Total Return"]
+        st.dataframe(tg, use_container_width=True, hide_index=True)
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Error Analysis":
 # ══════════════════════════════════════════════════════════════════════════════
