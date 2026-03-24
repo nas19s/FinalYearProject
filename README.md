@@ -41,6 +41,11 @@ The maximum drawdown figures reveal the clearest advantage. Strategy C's worst l
 
 These projections are illustrative and do not account for margin costs or slippage under leverage. They are presented as a directional comparison of signal quality, not as a trading recommendation. The underlying point is that the model's return distribution — many small gains, rare small losses — is structurally different from SPY's wider swings.
 
+An interactive Custom Backtest engine allows arbitrary filtering of the model's 
+test-set predictions by ticker, sector, and date range, with configurable starting 
+capital and transaction costs, producing live equity curves and per-ticker 
+performance breakdowns.
+
 **Statistical significance:**
 
 The 63.1% UP win rate over 309 independent test trades is confirmed significant at p < 0.001 (binomial test). The CAAR event study independently validates label quality — UP-labelled filings outperform DOWN-labelled filings by +11.81 percentage points by day +20, driven purely by the language in the filings and entirely independent of the model's predictions.
@@ -254,13 +259,13 @@ streamlit run app.py
 |---|---|
 | Overview | Research question, pipeline summary, headline metrics |
 | Data & EDA | Filing timeline, chunk lengths, section coverage, label distributions |
-| Model Results | Master results table, confusion matrices |
+| Model Results | Master results table, confusion matrices, training logs |
 | SHAP Explainability | Feature importance bar chart and beeswarm plot |
-| Live Prediction | Paste any filing text — live FinBERT T+20 inference |
-| Backtest | Equity curves, monthly returns, per-ticker performance |
+| Live Prediction | Paste any filing text — live FinBERT T+20 inference with chunk-level breakdown |
+| Backtest | Strategy definitions, equity curves, risk-adjusted comparison table, monthly returns, trade log |
+| Custom Backtest | Interactive engine — filter by ticker, sector, date; adjust capital, position size, transaction cost; live equity curve and drawdown chart |
 | Error Analysis | Failure patterns by sector, quarter, and ticker |
 | Advanced Analysis | Calibration, CAAR, ROC curves, ablation, significance tests |
-
 ---
 
 ## Reproduction
